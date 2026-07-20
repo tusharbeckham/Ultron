@@ -1,0 +1,3 @@
+import test from 'node:test';import assert from 'node:assert/strict';import {boundedLoop,clampSteps} from '../src/loop.mjs';
+test('loop stops on acceptance marker',async()=>{let calls=0;const provider={ask:async()=>{calls++;return 'done\nULTRON_DONE'}};const r=await boundedLoop({provider,prompt:'x'});assert.equal(r.converged,true);assert.equal(calls,1);assert.equal(r.output,'done')});
+test('loop never exceeds three passes',async()=>{let calls=0;const provider={ask:async()=>{calls++;return 'not yet'}};const r=await boundedLoop({provider,prompt:'x',maxSteps:3});assert.equal(calls,3);assert.equal(r.converged,false)});test('invalid step counts fail',()=>assert.throws(()=>clampSteps(9),/1, 2, or 3/));

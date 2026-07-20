@@ -1,0 +1,2 @@
+import { promises as fs } from 'node:fs';import crypto from 'node:crypto';import path from 'node:path';
+const file=process.argv[2];if(!file)throw new Error('Usage: node scripts/release.mjs <archive>');const bytes=await fs.readFile(file);const sha256=crypto.createHash('sha256').update(bytes).digest('hex');const manifest={schemaVersion:1,name:path.basename(file),sha256,bytes:bytes.length,createdAt:new Date().toISOString(),node:process.version};await fs.writeFile(`${file}.manifest.json`,JSON.stringify(manifest,null,2));console.log(JSON.stringify(manifest,null,2));
