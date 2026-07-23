@@ -1,27 +1,11 @@
 {
   "name": "ultron-cli",
-  "version": "0.3.1",
-  "description": "Secure model-agnostic developer CLI with resilient providers, project intelligence, MCP, and editor transport",
+  "version": "0.4.0",
+  "description": "Secure model-agnostic developer CLI with stateful interactive chat, project intelligence, MCP, and resilient providers",
   "type": "module",
-  "bin": {
-    "ultron": "./bin/ultron.mjs"
-  },
-  "files": [
-    "bin",
-    "src",
-    "scripts",
-    "README.md",
-    "ARCHITECTURE.md",
-    "SECURITY.md",
-    "LICENSE"
-  ],
-  "scripts": {
-    "test": "node --test",
-    "start": "node ./bin/ultron.mjs",
-    "pack:check": "npm pack --dry-run"
-  },
-  "engines": {
-    "node": ">=20"
-  },
+  "bin": { "ultron": "./bin/ultron.mjs" },
+  "files": ["bin","src","scripts","README.md","ARCHITECTURE.md","SECURITY.md","LICENSE"],
+  "scripts": { "test": "node --test", "start": "node ./bin/ultron.mjs", "pack:check": "npm pack --dry-run" },
+  "engines": { "node": ">=20" },
   "license": "MIT"
 }

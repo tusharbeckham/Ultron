@@ -1,116 +1,112 @@
 # Ultron CLI
 
-A dependency-free, model-agnostic developer CLI for Node.js 20+ with secure defaults, resilient provider adapters, local project intelligence, MCP support, and editor-friendly JSON transport.
+A secure, dependency-free, model-agnostic developer CLI for Node.js 20+ with stateful interactive chat, resilient provider adapters, project intelligence, MCP support, and editor-friendly transports.
 
-## Highlights in v0.3.0
+## v0.4.0 — True interactive chat
 
-- **Provider hardening:** streaming, cancellation, bounded retry/backoff, timeout policy, model catalogs, usage/rate-limit metadata, and optional cost estimates.
-- **Project intelligence:** ignore-aware indexing, Git context, non-mutating patch validation, and explicitly authorized patch application.
-- **Tool boundary:** read-only/balanced/unrestricted permission profiles and an MCP stdio JSON-RPC client.
-- **Sessions:** opt-in, versioned JSONL persistence with credential redaction, secure file modes, and JSON/Markdown export.
-- **IDE-grade interfaces:** Bash/Zsh/Fish/PowerShell completions, stable JSON output, and `ultron-jsonl/1` editor-agent transport.
-- **Distribution:** npm packaging checks, Unix and PowerShell installers, SHA-256 release manifests, and user-key signing workflow.
+Start a persistent conversation:
 
-## Install
+```bash
+ultron chat --provider openai --session new
+```
+
+Ultron now sends bounded conversation history with every turn instead of treating each line as an unrelated one-shot prompt. Direct APIs receive structured messages; CLI adapters receive a clearly delimited transcript. Sessions are redacted before persistence and can be resumed.
+
+### Interactive commands
+
+```text
+/help                 Show commands
+/clear                Clear conversation memory
+/exit                 Leave chat
+/provider <name>      Switch provider
+/model <id>           Switch model; "default" clears override
+/context              Show memory and attachments
+/index [path]         Add an ignore-aware project index summary
+/git [path]           Add Git branch/status/diff context
+/add <file>            Attach a project-local text file
+/drop <file|all>       Remove attachments
+/multi                 Multiline input; finish with a single .
+/save                  Show active session id
+/resume <session-id>   Restore saved turns
+```
+
+`Ctrl+C` during a direct API response cancels that response while keeping the chat alive. Context is bounded by `ULTRON_CHAT_MAX_CHARS` (default 60,000) or `--max-context-chars`. Old messages are omitted deterministically when needed. File attachment is read-only, project-root constrained, size bounded, and rejects binaries.
+
+Examples:
+
+```bash
+ultron chat --provider anthropic --session architecture-review
+ultron chat --provider claude-code --session new
+ultron chat --provider kimi --model kimi-k3 --session new
+```
+
+For Claude Code, Kiro, and OpenClaw adapters, Ultron supplies the bounded transcript to each vendor CLI invocation. It does not claim or depend on undocumented vendor-native session identifiers.
+
+## Existing capabilities
+
+- OpenAI Responses, Anthropic Messages, Kimi/Moonshot, and generic OpenAI-compatible APIs
+- Streaming, cancellation, bounded retry/backoff, timeouts, model catalogs, usage/rate-limit metadata
+- Kiro, Claude Code, and OpenClaw CLI adapters
+- Ignore-aware project indexing and Git-aware safe patch review
+- Read-only, balanced, and unrestricted permission profiles
+- MCP stdio JSON-RPC client
+- Redacted JSONL sessions with JSON and Markdown export
+- Bash, Zsh, Fish, and PowerShell completions
+- `ultron-jsonl/1` editor-agent transport
+- Unix and PowerShell installer scripts
+- SHA-256 release manifests and user-controlled GPG signing workflow
+
+## Install and verify
 
 ```bash
 npm install
+npm test
 npm link
 ultron doctor
 ```
 
-Or use `scripts/install.sh` on Unix-like systems or `scripts/install.ps1` on Windows. No runtime dependencies are required.
+## Provider configuration
 
-## Configure providers
-
-Ultron deliberately does not load or save `.env` files. Export only the credentials you need:
+Ultron reads credentials only from environment variables and deliberately does not load or save `.env` files.
 
 ```bash
 export OPENAI_API_KEY='...'
-ultron ask --provider openai --stream 'Review this repository'
+ultron chat --provider openai --session new
 
 export ANTHROPIC_API_KEY='...'
-ultron ask --provider anthropic --json 'Design a test plan'
+ultron chat --provider anthropic --session new
 
 export MOONSHOT_API_KEY='...'
-ultron chat --provider kimi --model kimi-k3
+ultron chat --provider kimi --session new
 ```
 
 Generic OpenAI-compatible endpoints use `ULTRON_CUSTOM_BASE_URL`, `ULTRON_CUSTOM_API_KEY`, and `ULTRON_CUSTOM_MODEL`.
 
-## Provider hardening
-
-```bash
-ultron capabilities --json
-ultron models --provider openai --json
-ultron ask --provider anthropic --timeout-ms 30000 --max-retries 3 'Review this design'
-```
-
-Defaults use `ULTRON_TIMEOUT_MS`, `ULTRON_MAX_RETRIES`, `ULTRON_RETRY_BASE_MS`, and `ULTRON_RETRY_MAX_MS`. Cost remains `null` unless matching `*_INPUT_USD_PER_MILLION` and `*_OUTPUT_USD_PER_MILLION` values are set, avoiding stale built-in pricing.
-
 ## Project intelligence
 
 ```bash
-# Respects .gitignore and .ultronignore
-ultron index . --profile read-only
-ultron index . --profile balanced --output .ultron/index.json
-
+ultron index .
 ultron git .
-ultron patch change.patch                         # git apply --check only
+ultron patch change.patch
 ultron patch change.patch --apply --profile balanced
 ```
 
-Symlinks are skipped and index size is bounded. Patch application is never implicit.
+Patch application is never implicit. The bounded agentic `run` command remains capped at three passes and never executes model-generated shell commands.
 
-## Permissions and MCP
-
-The default profile is `read-only`. Inspect profiles with `ultron permissions`.
-
-```bash
-ultron mcp tools --profile unrestricted --command node --args '["server.mjs"]'
-ultron mcp call --profile unrestricted --command node --args '["server.mjs"]' --tool echo --input '{"value":"hello"}'
-```
-
-MCP process launch requires shell permission and uses direct process spawning, not shell interpolation.
-
-## Redacted sessions
-
-```bash
-ultron chat --provider openai --session new
-ultron ask --provider openai --session project-review 'Continue review'
-ultron session export project-review --format md --output review.md
-```
-
-Sessions are opt-in and stored as mode-0600 JSONL where supported. Common secret forms are redacted before persistence.
-
-## Shell completions and editor transport
-
-```bash
-ultron completion bash
-ultron completion zsh
-ultron completion fish
-ultron completion powershell
-```
-
-`ultron serve --provider openai` exposes newline-delimited JSON-RPC. Initialize with method `initialize`, invoke a model with `prompt`, and end with `shutdown`. The returned protocol identifier is `ultron-jsonl/1`; this is a documented equivalent editor transport rather than a false claim of full ACP conformance.
-
-## Existing integrations
-
-- Kiro CLI headless adapter (tool trust remains opt-in with `--trust-all`)
-- Claude Code one-shot adapter
-- OpenClaw agent adapter
-- Notion search/page connector (requires a Notion-enabled permission profile)
-- VS Code, VSCodium, Cursor, Antigravity, and Zed launchers
-- Bounded agentic loop with a hard maximum of three passes
-
-## Release and verification
+## Release signing
 
 ```bash
 npm test
 npm pack --dry-run
-zip -r ultron-cli-v0.3.0.zip ultron-cli
-node scripts/release.mjs ultron-cli-v0.3.0.zip
-ULTRON_GPG_KEY_ID='<your-key>' scripts/sign-release.sh ultron-cli-v0.3.0.zip
+node scripts/release.mjs ultron-cli-v0.4.0.zip
+ULTRON_GPG_KEY_ID='<your-key>' scripts/sign-release.sh ultron-cli-v0.4.0.zip
 ```
 
-Ultron creates checksums and provenance locally. It never fabricates a cryptographic signature: signing requires a user-controlled GPG key. Live provider smoke tests require valid user credentials, network access, subscriptions, and provider permissions.
+On Windows PowerShell:
+
+```powershell
+gpg --armor --detach-sign --local-user YOUR_KEY_FINGERPRINT .\ultron-cli-v0.4.0.zip
+gpg --verify .\ultron-cli-v0.4.0.zip.asc .\ultron-cli-v0.4.0.zip
+```
+
+Ultron never fabricates a signature. Cryptographic release signing requires the user's private GPG key. Live provider smoke tests require the user's credentials and provider access.

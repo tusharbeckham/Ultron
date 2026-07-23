@@ -88,8 +88,9 @@ function result(provider, model, text, usage, headers, prefix) { const normalize
 const bearer = key => ({ Authorization: `Bearer ${key}`, 'Content-Type': 'application/json' });
 const anthropicHeaders = key => ({ 'x-api-key': key, 'anthropic-version': '2023-06-01', 'Content-Type': 'application/json' });
 
-async function openAICompatibleAsk({ provider, prefix, base, key, endpoint = 'chat/completions', model, prompt, stream, onToken = () => {}, policy }) {
-  const payload = { model, messages: [{ role: 'user', content: prompt }], stream: !!stream, ...(stream ? { stream_options: { include_usage: true } } : {}) };
+function conversationPrompt(messages, fallback) { if (!messages?.length) return fallback; return messages.map(message => `${message.role.toUpperCase()}:\n${message.content}`).join('\n\n') + '\n\nASSISTANT:\n'; }
+async function openAICompatibleAsk({ provider, prefix, base, key, endpoint = 'chat/completions', model, prompt, messages, stream, onToken = () => {}, policy }) {
+  const payload = { model, messages: messages?.length ? messages : [{ role: 'user', content: prompt }], stream: !!stream, ...(stream ? { stream_options: { include_usage: true } } : {}) };
   if (!stream) { const { body, headers } = await jsonRequest(`${base}/${endpoint}`, { method: 'POST', headers: bearer(key), body: JSON.stringify(payload) }, policy); return result(provider, model, openAIText(body), body.usage, headers, prefix); }
   const res = await request(`${base}/${endpoint}`, { method: 'POST', headers: bearer(key), body: JSON.stringify(payload) }, policy); let text = '', usage = {};
   await readSse(res, ({ data }) => { const delta = data?.choices?.[0]?.delta?.content || ''; if (delta) { text += delta; onToken(delta); } if (data?.usage) usage = data.usage; });
@@ -99,11 +100,11 @@ async function openAICompatibleAsk({ provider, prefix, base, key, endpoint = 'ch
 export const providers = {
   openai: {
     description: 'OpenAI Responses API', configured: () => !!process.env.OPENAI_API_KEY,
-    capabilities: { streaming: true, cancellation: true, retries: true, models: true, usage: true },
+    capabilities: { streaming: true, cancellation: true, retries: true, models: true, usage: true, conversation: true },
     async askDetailed(prompt, opts = {}) {
       const key = required(process.env.OPENAI_API_KEY, 'OPENAI_API_KEY'), base = (process.env.OPENAI_BASE_URL || 'https://api.openai.com/v1').replace(/\/$/, ''), model = opts.model || process.env.OPENAI_MODEL || 'gpt-5.6';
-      if (!opts.stream) { const { body, headers } = await jsonRequest(`${base}/responses`, { method: 'POST', headers: bearer(key), body: JSON.stringify({ model, input: prompt }) }, opts); return result('openai', model, openAIText(body), body.usage, headers, 'OPENAI'); }
-      const res = await request(`${base}/responses`, { method: 'POST', headers: bearer(key), body: JSON.stringify({ model, input: prompt, stream: true }) }, opts); let text = '', usage = {};
+      if (!opts.stream) { const { body, headers } = await jsonRequest(`${base}/responses`, { method: 'POST', headers: bearer(key), body: JSON.stringify({ model, input: opts.messages?.length ? opts.messages : prompt }) }, opts); return result('openai', model, openAIText(body), body.usage, headers, 'OPENAI'); }
+      const res = await request(`${base}/responses`, { method: 'POST', headers: bearer(key), body: JSON.stringify({ model, input: opts.messages?.length ? opts.messages : prompt, stream: true }) }, opts); let text = '', usage = {};
       await readSse(res, ({ event, data }) => { if (event === 'response.output_text.delta' || data?.type === 'response.output_text.delta') { const delta = data.delta || ''; text += delta; opts.onToken?.(delta); } if (event === 'response.completed' || data?.type === 'response.completed') usage = data.response?.usage || usage; });
       return result('openai', model, text, usage, res.headers, 'OPENAI');
     },
@@ -112,10 +113,12 @@ export const providers = {
   },
   anthropic: {
     description: 'Anthropic Messages API', configured: () => !!process.env.ANTHROPIC_API_KEY,
-    capabilities: { streaming: true, cancellation: true, retries: true, models: true, usage: true },
+    capabilities: { streaming: true, cancellation: true, retries: true, models: true, usage: true, conversation: true },
     async askDetailed(prompt, opts = {}) {
       const key = required(process.env.ANTHROPIC_API_KEY, 'ANTHROPIC_API_KEY'), base = (process.env.ANTHROPIC_BASE_URL || 'https://api.anthropic.com/v1').replace(/\/$/, ''), model = opts.model || process.env.ANTHROPIC_MODEL || 'claude-opus-4-8';
-      const payload = { model, max_tokens: 4096, messages: [{ role: 'user', content: prompt }], stream: !!opts.stream };
+      const conversation = opts.messages?.length ? opts.messages : [{ role: 'user', content: prompt }];
+      const system = conversation.filter(x => x.role === 'system').map(x => x.content).join('\n\n') || undefined;
+      const payload = { model, max_tokens: 4096, ...(system ? { system } : {}), messages: conversation.filter(x => x.role !== 'system'), stream: !!opts.stream };
       if (!opts.stream) { const { body, headers } = await jsonRequest(`${base}/messages`, { method: 'POST', headers: anthropicHeaders(key), body: JSON.stringify(payload) }, opts); return result('anthropic', model, (body.content || []).filter(x => x.type === 'text').map(x => x.text).join('\n'), body.usage, headers, 'ANTHROPIC'); }
       const res = await request(`${base}/messages`, { method: 'POST', headers: anthropicHeaders(key), body: JSON.stringify(payload) }, opts); let text = '', usage = {};
       await readSse(res, ({ event, data }) => { if (event === 'content_block_delta' && data?.delta?.type === 'text_delta') { text += data.delta.text; opts.onToken?.(data.delta.text); } if (event === 'message_start') usage = data.message?.usage || {}; if (event === 'message_delta') usage = { ...usage, ...data.usage }; });
@@ -126,20 +129,20 @@ export const providers = {
   },
   kimi: {
     description: 'Kimi / Moonshot OpenAI-compatible API', configured: () => !!process.env.MOONSHOT_API_KEY,
-    capabilities: { streaming: true, cancellation: true, retries: true, models: true, usage: true },
-    async askDetailed(prompt, opts = {}) { return openAICompatibleAsk({ provider: 'kimi', prefix: 'KIMI', base: (process.env.KIMI_BASE_URL || 'https://api.moonshot.ai/v1').replace(/\/$/, ''), key: required(process.env.MOONSHOT_API_KEY, 'MOONSHOT_API_KEY'), model: opts.model || process.env.KIMI_MODEL || 'kimi-k3', prompt, stream: opts.stream, onToken: opts.onToken, policy: opts }); },
+    capabilities: { streaming: true, cancellation: true, retries: true, models: true, usage: true, conversation: true },
+    async askDetailed(prompt, opts = {}) { return openAICompatibleAsk({ provider: 'kimi', prefix: 'KIMI', base: (process.env.KIMI_BASE_URL || 'https://api.moonshot.ai/v1').replace(/\/$/, ''), key: required(process.env.MOONSHOT_API_KEY, 'MOONSHOT_API_KEY'), model: opts.model || process.env.KIMI_MODEL || 'kimi-k3', prompt, messages: opts.messages, stream: opts.stream, onToken: opts.onToken, policy: opts }); },
     async ask(prompt, opts) { return (await this.askDetailed(prompt, opts)).text; },
     async listModels(opts = {}) { const base = (process.env.KIMI_BASE_URL || 'https://api.moonshot.ai/v1').replace(/\/$/, ''); return (await jsonRequest(`${base}/models`, { headers: bearer(required(process.env.MOONSHOT_API_KEY, 'MOONSHOT_API_KEY')) }, opts)).body.data || []; }
   },
   custom: {
     description: 'Any OpenAI-compatible Chat Completions endpoint', configured: () => !!(process.env.ULTRON_CUSTOM_BASE_URL && process.env.ULTRON_CUSTOM_API_KEY),
-    capabilities: { streaming: true, cancellation: true, retries: true, models: true, usage: true },
-    async askDetailed(prompt, opts = {}) { return openAICompatibleAsk({ provider: 'custom', prefix: 'ULTRON_CUSTOM', base: required(process.env.ULTRON_CUSTOM_BASE_URL, 'ULTRON_CUSTOM_BASE_URL').replace(/\/$/, ''), key: required(process.env.ULTRON_CUSTOM_API_KEY, 'ULTRON_CUSTOM_API_KEY'), model: required(opts.model || process.env.ULTRON_CUSTOM_MODEL, 'ULTRON_CUSTOM_MODEL or --model'), prompt, stream: opts.stream, onToken: opts.onToken, policy: opts }); },
+    capabilities: { streaming: true, cancellation: true, retries: true, models: true, usage: true, conversation: true },
+    async askDetailed(prompt, opts = {}) { return openAICompatibleAsk({ provider: 'custom', prefix: 'ULTRON_CUSTOM', base: required(process.env.ULTRON_CUSTOM_BASE_URL, 'ULTRON_CUSTOM_BASE_URL').replace(/\/$/, ''), key: required(process.env.ULTRON_CUSTOM_API_KEY, 'ULTRON_CUSTOM_API_KEY'), model: required(opts.model || process.env.ULTRON_CUSTOM_MODEL, 'ULTRON_CUSTOM_MODEL or --model'), prompt, messages: opts.messages, stream: opts.stream, onToken: opts.onToken, policy: opts }); },
     async ask(prompt, opts) { return (await this.askDetailed(prompt, opts)).text; },
     async listModels(opts = {}) { const base = required(process.env.ULTRON_CUSTOM_BASE_URL, 'ULTRON_CUSTOM_BASE_URL').replace(/\/$/, ''); return (await jsonRequest(`${base}/models`, { headers: bearer(required(process.env.ULTRON_CUSTOM_API_KEY, 'ULTRON_CUSTOM_API_KEY')) }, opts)).body.data || []; }
   },
-  kiro: { description: 'Kiro CLI headless adapter', configured: () => !!process.env.KIRO_API_KEY, capabilities: { streaming: false, cancellation: false, retries: false, models: false, usage: false }, async available() { return commandExists(process.env.KIRO_COMMAND || 'kiro-cli'); }, async ask(prompt, { trustAll = false } = {}) { required(process.env.KIRO_API_KEY, 'KIRO_API_KEY'); const args = ['chat', '--no-interactive']; if (trustAll) args.push('--trust-all-tools'); args.push(prompt); return (await runCommand(process.env.KIRO_COMMAND || 'kiro-cli', args)).stdout; } },
-  'claude-code': { description: 'Claude Code one-shot adapter', configured: () => true, capabilities: { streaming: false, cancellation: false, retries: false, models: false, usage: false }, async available() { return commandExists(process.env.CLAUDE_CODE_COMMAND || 'claude'); }, async ask(prompt) { const out = (await runCommand(process.env.CLAUDE_CODE_COMMAND || 'claude', ['-p', prompt, '--output-format', 'json'])).stdout; try { const j = JSON.parse(out); return j.result || j.response || out; } catch { return out; } } },
-  openclaw: { description: 'OpenClaw agent adapter', configured: () => true, capabilities: { streaming: false, cancellation: false, retries: false, models: false, usage: false }, async available() { return commandExists(process.env.OPENCLAW_COMMAND || 'openclaw'); }, async ask(prompt, { model } = {}) { const args = ['agent', '--agent', process.env.OPENCLAW_AGENT || 'main', '--message', prompt, '--json']; if (model) args.push('--model', model); const out = (await runCommand(process.env.OPENCLAW_COMMAND || 'openclaw', args)).stdout; try { const j = JSON.parse(out); return j.payloads?.map(x => x.text).filter(Boolean).join('\n') || j.result || out; } catch { return out; } } }
+  kiro: { description: 'Kiro CLI headless adapter', configured: () => !!process.env.KIRO_API_KEY, capabilities: { streaming: false, cancellation: false, retries: false, models: false, usage: false, conversation: true }, async available() { return commandExists(process.env.KIRO_COMMAND || 'kiro-cli'); }, async ask(prompt, { trustAll = false, messages } = {}) { required(process.env.KIRO_API_KEY, 'KIRO_API_KEY'); const args = ['chat', '--no-interactive']; if (trustAll) args.push('--trust-all-tools'); args.push(conversationPrompt(messages, prompt)); return (await runCommand(process.env.KIRO_COMMAND || 'kiro-cli', args)).stdout; } },
+  'claude-code': { description: 'Claude Code one-shot adapter', configured: () => true, capabilities: { streaming: false, cancellation: false, retries: false, models: false, usage: false, conversation: true }, async available() { return commandExists(process.env.CLAUDE_CODE_COMMAND || 'claude'); }, async ask(prompt, { messages } = {}) { const out = (await runCommand(process.env.CLAUDE_CODE_COMMAND || 'claude', ['-p', conversationPrompt(messages, prompt), '--output-format', 'json'])).stdout; try { const j = JSON.parse(out); return j.result || j.response || out; } catch { return out; } } },
+  openclaw: { description: 'OpenClaw agent adapter', configured: () => true, capabilities: { streaming: false, cancellation: false, retries: false, models: false, usage: false, conversation: true }, async available() { return commandExists(process.env.OPENCLAW_COMMAND || 'openclaw'); }, async ask(prompt, { model, messages } = {}) { const args = ['agent', '--agent', process.env.OPENCLAW_AGENT || 'main', '--message', conversationPrompt(messages, prompt), '--json']; if (model) args.push('--model', model); const out = (await runCommand(process.env.OPENCLAW_COMMAND || 'openclaw', args)).stdout; try { const j = JSON.parse(out); return j.payloads?.map(x => x.text).filter(Boolean).join('\n') || j.result || out; } catch { return out; } } }
 };
 export function getProvider(name) { const provider = providers[name]; if (!provider) throw new Error(`Unknown provider: ${name}`); return provider; }
