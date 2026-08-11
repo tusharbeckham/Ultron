@@ -97,6 +97,34 @@ async function openAICompatibleAsk({ provider, prefix, base, key, endpoint = 'ch
   return result(provider, model, text, usage, res.headers, prefix);
 }
 
+export const localBase = () => (process.env.ULTRON_LOCAL_BASE_URL || 'http://localhost:1234/v1').replace(/\/$/, '');
+/** Alfred-Coder: the Owner's fine-tuned local model, served by LM Studio. Free, offline. */
+export const alfredBase = () => (process.env.ALFRED_BASE_URL || process.env.ULTRON_LOCAL_BASE_URL || 'http://localhost:1234/v1').replace(/\/$/, '');
+export const alfredModel = () => process.env.ALFRED_MODEL || 'alfred-coder-7b';
+/** Liveness probe for a local OpenAI-compatible server. Never throws. */
+export async function probeLocal({ fetchImpl = fetch, timeoutMs = 2000, base = null } = {}) {
+  try {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    try { const res = await fetchImpl(`${base || localBase()}/models`, { headers: { Authorization: `Bearer ${process.env.ULTRON_LOCAL_API_KEY || 'local'}` }, signal: controller.signal }); return !!res?.ok; }
+    finally { clearTimeout(timer); }
+  } catch { return false; }
+}
+
+/** Which models a local server currently has loaded. Returns [] when unreachable. */
+export async function localLoadedModels({ fetchImpl = fetch, timeoutMs = 2000, base = null } = {}) {
+  try {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    try {
+      const res = await fetchImpl(`${base || localBase()}/models`, { headers: { Authorization: `Bearer ${process.env.ULTRON_LOCAL_API_KEY || 'local'}` }, signal: controller.signal });
+      if (!res?.ok) return [];
+      const body = JSON.parse(await res.text());
+      return (body.data || []).map(m => m.id).filter(Boolean);
+    } finally { clearTimeout(timer); }
+  } catch { return []; }
+}
+
 export const providers = {
   openai: {
     description: 'OpenAI Responses API', configured: () => !!process.env.OPENAI_API_KEY,
@@ -141,8 +169,38 @@ export const providers = {
     async ask(prompt, opts) { return (await this.askDetailed(prompt, opts)).text; },
     async listModels(opts = {}) { const base = required(process.env.ULTRON_CUSTOM_BASE_URL, 'ULTRON_CUSTOM_BASE_URL').replace(/\/$/, ''); return (await jsonRequest(`${base}/models`, { headers: bearer(required(process.env.ULTRON_CUSTOM_API_KEY, 'ULTRON_CUSTOM_API_KEY')) }, opts)).body.data || []; }
   },
+  deepseek: {
+    description: 'DeepSeek V4 (Flash/Pro) OpenAI-compatible API', configured: () => !!process.env.DEEPSEEK_API_KEY,
+    capabilities: { streaming: true, cancellation: true, retries: true, models: true, usage: true, conversation: true },
+    async askDetailed(prompt, opts = {}) { return openAICompatibleAsk({ provider: 'deepseek', prefix: 'DEEPSEEK', base: (process.env.DEEPSEEK_BASE_URL || 'https://api.deepseek.com/v1').replace(/\/$/, ''), key: required(process.env.DEEPSEEK_API_KEY, 'DEEPSEEK_API_KEY'), model: opts.model || process.env.DEEPSEEK_MODEL || 'deepseek-v4-flash', prompt, messages: opts.messages, stream: opts.stream, onToken: opts.onToken, policy: opts }); },
+    async ask(prompt, opts) { return (await this.askDetailed(prompt, opts)).text; },
+    async listModels(opts = {}) { const base = (process.env.DEEPSEEK_BASE_URL || 'https://api.deepseek.com/v1').replace(/\/$/, ''); return (await jsonRequest(`${base}/models`, { headers: bearer(required(process.env.DEEPSEEK_API_KEY, 'DEEPSEEK_API_KEY')) }, opts)).body.data || []; }
+  },
+  zai: {
+    description: 'Z.ai / Zhipu GLM-5.2 OpenAI-compatible API', configured: () => !!process.env.ZAI_API_KEY,
+    capabilities: { streaming: true, cancellation: true, retries: true, models: true, usage: true, conversation: true },
+    async askDetailed(prompt, opts = {}) { return openAICompatibleAsk({ provider: 'zai', prefix: 'ZAI', base: (process.env.ZAI_BASE_URL || 'https://api.z.ai/api/paas/v4').replace(/\/$/, ''), key: required(process.env.ZAI_API_KEY, 'ZAI_API_KEY'), model: opts.model || process.env.ZAI_MODEL || 'glm-5.2', prompt, messages: opts.messages, stream: opts.stream, onToken: opts.onToken, policy: opts }); },
+    async ask(prompt, opts) { return (await this.askDetailed(prompt, opts)).text; },
+    async listModels(opts = {}) { const base = (process.env.ZAI_BASE_URL || 'https://api.z.ai/api/paas/v4').replace(/\/$/, ''); return (await jsonRequest(`${base}/models`, { headers: bearer(required(process.env.ZAI_API_KEY, 'ZAI_API_KEY')) }, opts)).body.data || []; }
+  },
+  local: {
+    description: 'Local OpenAI-compatible server (LM Studio 1234 / Ollama 11434 / llama.cpp 8080 / vLLM 8000)', configured: () => true,
+    capabilities: { streaming: true, cancellation: true, retries: true, models: true, usage: true, conversation: true, free: true },
+    async askDetailed(prompt, opts = {}) { return openAICompatibleAsk({ provider: 'local', prefix: 'ULTRON_LOCAL', base: localBase(), key: process.env.ULTRON_LOCAL_API_KEY || 'local', model: opts.model || process.env.ULTRON_LOCAL_MODEL || 'local-model', prompt, messages: opts.messages, stream: opts.stream, onToken: opts.onToken, policy: opts }); },
+    async ask(prompt, opts) { return (await this.askDetailed(prompt, opts)).text; },
+    async available() { return probeLocal(); },
+    async listModels(opts = {}) { return (await jsonRequest(`${localBase()}/models`, { headers: bearer(process.env.ULTRON_LOCAL_API_KEY || 'local') }, opts)).body.data || []; }
+  },
+  alfred: {
+    description: 'Alfred-Coder — the Owner\'s fine-tuned local model via LM Studio (free, offline)', configured: () => true,
+    capabilities: { streaming: true, cancellation: true, retries: true, models: true, usage: true, conversation: true, free: true },
+    async askDetailed(prompt, opts = {}) { return openAICompatibleAsk({ provider: 'alfred', prefix: 'ALFRED', base: alfredBase(), key: process.env.ALFRED_API_KEY || process.env.ULTRON_LOCAL_API_KEY || 'local', model: opts.model || alfredModel(), prompt, messages: opts.messages, stream: opts.stream, onToken: opts.onToken, policy: opts }); },
+    async ask(prompt, opts) { return (await this.askDetailed(prompt, opts)).text; },
+    async available() { return probeLocal({ base: alfredBase() }); },
+    async listModels(opts = {}) { return (await jsonRequest(`${alfredBase()}/models`, { headers: bearer(process.env.ALFRED_API_KEY || process.env.ULTRON_LOCAL_API_KEY || 'local') }, opts)).body.data || []; }
+  },
   kiro: { description: 'Kiro CLI headless adapter', configured: () => !!process.env.KIRO_API_KEY, capabilities: { streaming: false, cancellation: false, retries: false, models: false, usage: false, conversation: true }, async available() { return commandExists(process.env.KIRO_COMMAND || 'kiro-cli'); }, async ask(prompt, { trustAll = false, messages } = {}) { required(process.env.KIRO_API_KEY, 'KIRO_API_KEY'); const args = ['chat', '--no-interactive']; if (trustAll) args.push('--trust-all-tools'); args.push(conversationPrompt(messages, prompt)); return (await runCommand(process.env.KIRO_COMMAND || 'kiro-cli', args)).stdout; } },
   'claude-code': { description: 'Claude Code one-shot adapter', configured: () => true, capabilities: { streaming: false, cancellation: false, retries: false, models: false, usage: false, conversation: true }, async available() { return commandExists(process.env.CLAUDE_CODE_COMMAND || 'claude'); }, async ask(prompt, { messages } = {}) { const out = (await runCommand(process.env.CLAUDE_CODE_COMMAND || 'claude', ['-p', conversationPrompt(messages, prompt), '--output-format', 'json'])).stdout; try { const j = JSON.parse(out); return j.result || j.response || out; } catch { return out; } } },
-  openclaw: { description: 'OpenClaw agent adapter', configured: () => true, capabilities: { streaming: false, cancellation: false, retries: false, models: false, usage: false, conversation: true }, async available() { return commandExists(process.env.OPENCLAW_COMMAND || 'openclaw'); }, async ask(prompt, { model, messages } = {}) { const args = ['agent', '--agent', process.env.OPENCLAW_AGENT || 'main', '--message', conversationPrompt(messages, prompt), '--json']; if (model) args.push('--model', model); const out = (await runCommand(process.env.OPENCLAW_COMMAND || 'openclaw', args)).stdout; try { const j = JSON.parse(out); return j.payloads?.map(x => x.text).filter(Boolean).join('\n') || j.result || out; } catch { return out; } } }
+  openclaw: { description: 'OpenClaw agent adapter', configured: () => true, capabilities: { streaming: false, cancellation: false, retries: false, models: false, usage: false, conversation: true }, async available() { return commandExists(process.env.OPENCLAW_COMMAND || 'openclaw'); }, async ask(prompt, { model, messages } = {}) { const args = ['agent', '--agent', process.env.OPENCLAW_AGENT || 'main', '--message', conversationPrompt(messages, prompt), '--json']; if (model) args.push('--model', model); const out = (await runCommand(process.env.OPENCLAW_COMMAND || 'openclaw', args)).stdout; try { const j = JSON.parse(out); return j.payloads?.map(x => x.text).filter(Boolean).join('\n') || j.result || out; } catch { return out; } } },
 };
 export function getProvider(name) { const provider = providers[name]; if (!provider) throw new Error(`Unknown provider: ${name}`); return provider; }

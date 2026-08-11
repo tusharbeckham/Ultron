@@ -1,5 +1,15 @@
-const version=()=>process.env.NOTION_VERSION||'2026-03-11';
-function token(){if(!process.env.NOTION_ACCESS_TOKEN) throw new Error('NOTION_ACCESS_TOKEN is required'); return process.env.NOTION_ACCESS_TOKEN;}
+import { loadToken } from './tokens.mjs';
+import { NOTION_VERSION } from './notion-oauth.mjs';
+
+const version=()=>process.env.NOTION_VERSION||NOTION_VERSION;
+/** Resolution order: NOTION_ACCESS_TOKEN env (back-compat) -> encrypted token store key 'notion'. */
+export function notionToken(){
+  if(process.env.NOTION_ACCESS_TOKEN) return process.env.NOTION_ACCESS_TOKEN;
+  const stored=loadToken('notion');
+  if(stored?.accessToken) return stored.accessToken;
+  throw new Error("No Notion token. Set NOTION_ACCESS_TOKEN or run: ultron notion login");
+}
+function token(){return notionToken();}
 async function call(path,options={}){
   const apiBase=['https:','','api.notion.com','v1'].join('/');
   const res=await fetch(`${apiBase}${path}`,{...options,headers:{Authorization:`Bearer ${token()}`,'Notion-Version':version(),'Content-Type':'application/json',...(options.headers||{})}});

@@ -1,0 +1,44 @@
+{
+  "name": "feature",
+  "description": "Plan, implement and document in parallel, verify with a bounded fix loop, then review.",
+  "stages": [
+    {
+      "name": "plan",
+      "agent": "planner",
+      "prompt": "Objective:\n{task}\n\nProduce the ordered plan and explicit acceptance criteria."
+    },
+    {
+      "name": "code",
+      "agent": "coder",
+      "depends_on": ["plan"],
+      "timeout": 420,
+      "prompt": "Objective:\n{task}\n\nPlan to implement:\n{plan}\n\nFeedback from a previous attempt (empty on the first pass):\n{feedback}\n\nImplement it."
+    },
+    {
+      "name": "docs",
+      "agent": "planner",
+      "depends_on": ["plan"],
+      "prompt": "Objective:\n{task}\n\nPlan:\n{plan}\n\nDraft the user-facing documentation for this change. Prose only, no code."
+    },
+    {
+      "name": "test",
+      "agent": "tester",
+      "depends_on": ["code"],
+      "timeout": 300,
+      "prompt": "Acceptance criteria from the plan:\n{plan}\n\nImplementation to assess:\n{code}\n\nReport defects. Include TESTS_FAIL if any material defect exists.",
+      "loop_to": {
+        "target": "code",
+        "trigger": "TESTS_FAIL",
+        "max_iterations": 2,
+        "backoff": { "baseMs": 1000, "maxMs": 8000, "jitter": true }
+      }
+    },
+    {
+      "name": "review",
+      "agent": "reviewer",
+      "depends_on": ["test", "docs"],
+      "prompt": "Objective:\n{task}\n\nImplementation:\n{code}\n\nTest report:\n{test}\n\nDocumentation:\n{docs}\n\nGive the final review."
+    }
+  ],
+  "budget": { "maxStageRuns": 12, "maxUsdEstimate": 1.0 }
+}
