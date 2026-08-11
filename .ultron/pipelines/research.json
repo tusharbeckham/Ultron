@@ -1,0 +1,16 @@
+{
+  "name": "research",
+  "description": "Fan out independent research tracks in parallel, then fan in to a single synthesis.",
+  "stages": [
+    { "name": "track_a", "agent": "planner", "prompt": "Research question:\n{task}\n\nInvestigate the TECHNICAL angle only. Cite sources." },
+    { "name": "track_b", "agent": "planner", "prompt": "Research question:\n{task}\n\nInvestigate the COST and OPERATIONAL angle only. Cite sources." },
+    { "name": "track_c", "agent": "planner", "prompt": "Research question:\n{task}\n\nInvestigate RISKS and alternatives only. Cite sources." },
+    {
+      "name": "synthesis",
+      "agent": "reviewer",
+      "depends_on": ["track_a", "track_b", "track_c"],
+      "prompt": "Question:\n{task}\n\nTechnical:\n{track_a}\n\nCost/ops:\n{track_b}\n\nRisks:\n{track_c}\n\nSynthesize one recommendation. Mark anything unverified as unverified."
+    }
+  ],
+  "budget": { "maxStageRuns": 6, "maxUsdEstimate": 0.5 }
+}

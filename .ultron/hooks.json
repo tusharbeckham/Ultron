@@ -1,0 +1,14 @@
+{
+  "sessionStart": [],
+  "preToolUse": [
+    {
+      "matcher": "subagent",
+      "command": "node",
+      "args": [".ultron/hooks/guard.mjs"],
+      "timeoutMs": 5000,
+      "canDeny": true
+    }
+  ],
+  "postToolUse": [],
+  "sessionEnd": []
+}
