@@ -1,16 +1,27 @@
 # Ultron CLI
 
 A secure, **dependency-free**, model-agnostic developer CLI for Node.js 20+. Local-first
-interactive chat, subagent DAG pipelines, lifecycle hooks, remote MCP, browser OAuth, project
-intelligence, and resilient provider adapters — with zero runtime dependencies and no telemetry.
+interactive chat, subagent DAG pipelines with **explicit quality gates**, lifecycle hooks,
+remote MCP, browser OAuth, project intelligence, and resilient provider adapters — with zero
+runtime dependencies and no telemetry.
 
 ```bash
-ultron                       # interactive session on your local model, free
-ultron "explain this error"   # ask and stay in the session
+ultron                        # interactive session on your local model, free
+ultron "explain this error"    # ask and stay in the session
 ultron pipeline run feature --task "add pagination to /users"
 ```
 
-**Verified:** `npm test` → 145 tests passing, serial and deterministic.
+**Verified:** `npm test` → **257 tests passing**, serial and deterministic, zero dependencies.
+
+## What makes it different
+
+| | |
+|---|---|
+| **Zero runtime dependencies** | `package.json` has no `dependencies` block. Nothing to audit, nothing to typosquat, nothing to break on install. |
+| **Local-first** | Bare `ultron` talks to your own model via LM Studio. Free, offline, no key. |
+| **Bounded by construction** | Every loop, retry, budget and recursion depth has a cap. `runPipeline` never throws — you always get `{ ok, partial, reason, stages }`. |
+| **Gates, not retry loops** | Pipelines can advance only by passing an explicit gate that returns a structured verdict. See [`gauntlet/v1`](#gauntletv1--gates-instead-of-retry-loops). |
+| **No telemetry** | Credentials come from the environment only; `.env` files are deliberately never read or written. |
 
 ## Just run it
 
@@ -66,6 +77,77 @@ error, and it warns when a *different* model is loaded than the one you asked fo
 `/model` on its own reports the active model; `/model default` clears an override.
 Switch tiers mid-conversation without losing context: `/provider deepseek` then
 `/model deepseek-v4-flash`.
+
+## `gauntlet/v1` — gates instead of retry loops
+
+`src/gauntlet.mjs` implements an execution-graph contract shared with the
+[Alfred harness](https://github.com/tusharbeckham/Alfred). Work advances only by passing an
+explicit **gate** that returns a structured verdict — `PASS` / `RETRY` / `REROUTE` /
+`ESCALATE` / `ABORT` — and the *engine* decides what happens next, not the model.
+
+A retry loop cannot tell "tests failed" from "the model refused", so it applies the same remedy
+forever. Here every rung of the ladder is bounded:
+
+```
+RETRY x2  ->  REROUTE x2  ->  ESCALATE x1  ->  ABORT (partial result + reason)
+ fix, fix     replan            deep-review     stop, honestly
+```
+
+Three guarantees hold regardless of what a gate asks for:
+
+- A third `RETRY` with the **same reason code** is impossible — it becomes `REROUTE`.
+- A node that produced **output it already produced** is rerouted, never retried.
+- A gate may reject at most **4 times in total**, whatever it calls the failures.
+
+That last one matters most. A live 7B gate defeated the per-code rule by inventing a new reason
+code on every attempt — 40 node runs, **zero** forced reroutes. A guarantee keyed on a value the
+model chooses is not a guarantee, so total attempts are bounded too, and unrecognised codes fold
+into `OTHER` so repeated failures converge on one counter. An unreadable gate **fails closed**
+(`ABORT`), never open.
+
+### Why the router is duplicated, not just the schema
+
+Alfred and Ultron are deliberately separate runtimes (Python vs Node, different trust models).
+If Ultron ran the same graph with a plain retry loop, then *where* you ran a spec would silently
+change what it was allowed to do — the safety guarantee would belong to the runtime instead of
+the spec. So both engines carry the same bounds, and a parity test fails the build if they drift:
+
+```bash
+node scripts/gauntlet-check.mjs validate <spec.json>   # what Ultron thinks of a spec
+node scripts/gauntlet-check.mjs route    <case.json>   # what Ultron would do with a verdict
+```
+
+Alfred drives those from `scripts/test_ultron_parity.py` and asserts both engines agree on every
+shipped spec and on the whole routing ladder.
+
+## Pipelines you can watch
+
+A pipeline is *waves of parallel stages*, and a scrolling log flattens exactly the structure you
+need to see. `pipeline run` draws the waves live instead:
+
+```
+[FEATURE] ████████░░░░░░░░  50% 2/4  8.3s
+├─ ✓ wave 1
+│  └─ ✓ plan
+├─ ● wave 2
+│  ├─ ✓ code   coder
+│  └─ ● test   tester
+└─ ○ wave 3
+   └─ ○ review
+loops review->code
+```
+
+A `loop` event **resets the stage it returns to and decrements the completed count** — leaving
+re-run work green would claim progress that was undone. The renderer holds no engine state and
+consumes the existing `onEvent` callback, so a display bug cannot affect execution. It degrades
+to one line per event when stdout is not a TTY, and `--json` output is untouched.
+
+### The UI kit
+
+`src/ui.mjs` is a zero-dependency terminal toolkit used across the CLI: `spinner` (async-safe,
+degrades to plain lines when piped), `table` (ANSI-aware column widths that shrink to fit),
+`progressBar`, `costMeter`, `codeBlock`, `markdown`, `diff`, and `tree`. `NO_COLOR` is honoured
+throughout, and `strip()` makes every renderer testable.
 
 ## v0.5.0 — subagents, hooks, remote MCP, Notion OAuth
 
