@@ -4,7 +4,7 @@ import { promises as fs } from 'node:fs';
 import { promises as fsp } from 'node:fs';
 import path from 'node:path';
 import { stdin as input, stdout as output } from 'node:process';
-import { banner, panel, line, status, fail, c } from '../src/ui.mjs';
+import { banner, panel, line, status, fail, c, spinner, costMeter, table } from '../src/ui.mjs';
 import { providers, getProvider, probeLocal, localBase, alfredBase, alfredModel, localLoadedModels } from '../src/providers.mjs';
 import { boundedLoop, clampSteps } from '../src/loop.mjs';
 import { notionSearch, notionPage } from '../src/notion.mjs';
@@ -15,6 +15,7 @@ import { loadAgents, loadPipeline, validatePipeline, computeWaves, toMermaid, ru
 import { loadHookConfig, fireHooks, guardToolUse } from '../src/hooks.mjs';
 import { McpHttpClient } from '../src/mcp-http.mjs';
 import { NOTION_MCP_RESOURCE } from '../src/notion-oauth.mjs';
+import { PipelineProgress } from '../src/pipeline-progress.mjs';
 import { commandExists, runCommand } from '../src/process.mjs';
 import { indexProject, writeIndex } from '../src/indexer.mjs';
 import { gitContext, reviewPatch } from '../src/git.mjs';
@@ -31,8 +32,8 @@ const print = (value, json = false) => console.log(json || typeof value !== 'str
 function help() { console.log(`${banner()}\n\nUsage:\n  ultron providers | capabilities [--provider <name>] | models --provider <name>\n  ultron ask|run|chat --provider <name> [--stream] [--json] [--session <id>] <prompt>\n  ultron index [path] [--output <file>]\n  ultron git [path] | patch <file> [--apply --profile balanced]\n  ultron mcp tools|call --command <executable> [--args '["..."]'] [--tool <name>] [--input '{}']\n  ultron session export <id> [--format jsonl|json|md] [--output <file>]\n  ultron completion bash|zsh|fish|powershell\n  ultron serve --provider <name>\n  ultron notion login [--path mcp|rest] [--no-browser] | notion status | notion logout\n  ultron notion tools | notion call --tool <name> [--input '{}']\n  ultron notion search <query> | notion page <id>\n  ultron agents | pipeline plan|graph|run <name> [--task "..."] [--budget N]\n  ultron registry [--provider <name>] | route "<task>"\n  ultron ide --editor code|codium|cursor|antigravity|zed [path]\n\nSecurity defaults: read-only permission profile, environment-only credentials, redacted sessions, no automatic shell execution.`); }
 async function providerRows() { const rows = []; for (const [name,p] of Object.entries(providers)) { let ok = p.configured(); if (p.available) ok = ok && await p.available(); rows.push(line(name, `${p.description} · ${status(ok)}`)); } return rows; }
 function requestOpts(flags, extra = {}) { return { model: flags.model, stream: !!flags.stream, timeoutMs: flags['timeout-ms'] ? Number(flags['timeout-ms']) : undefined, maxRetries: flags['max-retries'] ? Number(flags['max-retries']) : undefined, trustAll: flags['trust-all'], onRetry: info => { if (!flags.json) console.error(`${c.dim}retry ${info.attempt} in ${Math.round(info.delayMs)}ms${info.status ? ` · HTTP ${info.status}` : ''}${c.reset}`); }, ...extra }; }
-async function askOnce(name, prompt, flags = {}) { const provider = getProvider(name), opts = requestOpts(flags, { messages: flags.messages, signal: flags.signal, onToken: flags.onToken || (token => { if (flags.stream && !flags.json) process.stdout.write(token); }) }); const result = provider.askDetailed ? await provider.askDetailed(prompt, opts) : { provider: name, model: flags.model || null, text: await provider.ask(prompt, opts), usage: null, estimatedCostUsd: null, rateLimit: {} }; if (flags.stream && !flags.json) process.stdout.write('\n'); if (flags.session && !flags.noPersist) { await appendSession(flags.session, { type: 'turn', provider: name, model: result.model, prompt, text: result.text, usage: result.usage }); } return result; }
-function usageLine(result) { if (!result?.usage) return; const cost = result.estimatedCostUsd == null ? 'cost unavailable' : `$${result.estimatedCostUsd.toFixed(6)} est.`; console.error(`${c.dim}usage · ${result.usage.inputTokens} input · ${result.usage.outputTokens} output · ${cost}${c.reset}`); }
+async function askOnce(name, prompt, flags = {}) { const provider = getProvider(name), opts = requestOpts(flags, { messages: flags.messages, signal: flags.signal, onToken: flags.onToken || (token => { if (flags.stream && !flags.json) process.stdout.write(token); }) }); const waiting = (!flags.stream && !flags.json && !flags.quiet) ? spinner(`${name}${flags.model ? ` · ${flags.model}` : ''} thinking`, { stream: process.stderr }) : null; let result; try { result = provider.askDetailed ? await provider.askDetailed(prompt, opts) : { provider: name, model: flags.model || null, text: await provider.ask(prompt, opts), usage: null, estimatedCostUsd: null, rateLimit: {} }; } catch (error) { waiting?.fail(`${name} failed`); throw error; } waiting?.succeed(`${name}${result.model ? ` · ${result.model}` : ''}`); if (flags.stream && !flags.json) process.stdout.write('\n'); if (flags.session && !flags.noPersist) { await appendSession(flags.session, { type: 'turn', provider: name, model: result.model, prompt, text: result.text, usage: result.usage }); } return result; }
+function usageLine(result) { if (!result?.usage) return; console.error(costMeter({ inputTokens: result.usage.inputTokens || 0, outputTokens: result.usage.outputTokens || 0, usd: result.estimatedCostUsd, model: result.model, budgetUsd: process.env.ULTRON_BUDGET_USD ? Number(process.env.ULTRON_BUDGET_USD) : null })); }
 
 const DEFAULT_PROVIDER = () => process.env.ULTRON_DEFAULT_PROVIDER || 'alfred';
 
@@ -97,7 +98,7 @@ async function main() {
   if (!knownCommands.includes(cmd)) { await startChat(flags, [cmd, ...pos]); return; }
   if (cmd === 'providers') { if (flags.json) print(Object.fromEntries(Object.entries(providers).map(([n,p]) => [n,{description:p.description,configured:p.configured(),capabilities:p.capabilities||{}}])), true); else console.log(panel('Provider matrix', await providerRows())); return; }
   if (cmd === 'capabilities') { const selected = flags.provider ? { [flags.provider]: getProvider(flags.provider) } : providers, value = Object.fromEntries(Object.entries(selected).map(([n,p]) => [n,p.capabilities||{}])); if (flags.json) print(value,true); else console.log(panel('Provider capabilities',Object.entries(value).map(([n,caps])=>line(n,Object.entries(caps).filter(([,v])=>v).map(([k])=>k).join(', ')||'basic')))); return; }
-  if (cmd === 'models') { const name=flags.provider||'openai',p=getProvider(name);if(!p.listModels)throw new Error(`${name} does not support model discovery`);const models=await p.listModels(requestOpts(flags));print(flags.json?models:models.map(m=>m.id||m.name||JSON.stringify(m)).join('\n'),flags.json);return; }
+  if (cmd === 'models') { const name=flags.provider||'openai',p=getProvider(name);if(!p.listModels)throw new Error(`${name} does not support model discovery`);const models=await p.listModels(requestOpts(flags));if(flags.json){print(models,true);return;}const rows=models.map(m=>[m.id||m.name||JSON.stringify(m),m.contextWindow||m.context_length||'',m.owned_by||m.owner||'']);console.log(table(['model','context','owner'],rows,{align:['left','right','left']}));return; }
   if (cmd === 'doctor') {
     const profile=getPermissionProfile(flags.profile);
     const root=path.resolve(flags.cwd||process.cwd());
@@ -192,21 +193,32 @@ async function main() {
     const hookConfig = await loadHookConfig(root);
     await fireHooks(hookConfig, 'sessionStart', { pipeline: pipeline.name }, { cwd: root });
 
-    const result = await runPipeline({
-      pipeline, agents, task,
-      concurrency: flags.concurrency ? Number(flags.concurrency) : undefined,
-      budget: flags.budget ? { maxStageRuns: Number(flags.budget) } : null,
-      onEvent: event => { if (!flags.json) console.error(`${c.dim}${event.type} · ${event.stage || `${event.from}->${event.to}`}${c.reset}`); },
-      invoke: async ({ agent, prompt, stage }) => {
-        // A preToolUse hook may veto a stage before any provider call is made.
-        await guardToolUse(hookConfig, 'subagent', { agent: agent.name, stage: stage.name }, { cwd: root });
-        const response = await askOnce(agent.provider, prompt, {
-          ...flags, model: stage.model || agent.model, stream: false, json: true, noPersist: true,
-          messages: agent.systemPrompt ? [{ role: 'system', content: agent.systemPrompt }, { role: 'user', content: prompt }] : undefined
-        });
-        return { text: response.text, usage: response.usage ? { inputTokens: response.usage.inputTokens, outputTokens: response.usage.outputTokens } : null, model: response.model };
-      }
-    });
+    // A pipeline is waves of parallel stages; a flat event log hides exactly that
+    // structure. Render the waves live instead, and keep JSON output untouched.
+    const progress = flags.json ? null : new PipelineProgress(pipeline, computeWaves(pipeline));
+    progress?.start();
+
+    let result;
+    try {
+      result = await runPipeline({
+        pipeline, agents, task,
+        concurrency: flags.concurrency ? Number(flags.concurrency) : undefined,
+        budget: flags.budget ? { maxStageRuns: Number(flags.budget) } : null,
+        onEvent: event => { progress?.handle(event); },
+        invoke: async ({ agent, prompt, stage }) => {
+          // A preToolUse hook may veto a stage before any provider call is made.
+          await guardToolUse(hookConfig, 'subagent', { agent: agent.name, stage: stage.name }, { cwd: root });
+          const response = await askOnce(agent.provider, prompt, {
+            ...flags, model: stage.model || agent.model, stream: false, json: true, noPersist: true, quiet: true,
+            messages: agent.systemPrompt ? [{ role: 'system', content: agent.systemPrompt }, { role: 'user', content: prompt }] : undefined
+          });
+          return { text: response.text, usage: response.usage ? { inputTokens: response.usage.inputTokens, outputTokens: response.usage.outputTokens } : null, model: response.model };
+        }
+      });
+    } finally {
+      progress?.stop();
+    }
+    if (progress) console.error(`  ${progress.summary()}`);
 
     await fireHooks(hookConfig, 'sessionEnd', { pipeline: pipeline.name, ok: result.ok }, { cwd: root });
     if (flags.session) await appendSession(flags.session, { type: 'pipeline', pipeline: pipeline.name, task, ok: result.ok, reason: result.reason, stageRuns: result.stageRuns });
