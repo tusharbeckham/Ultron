@@ -19,7 +19,9 @@ import { PipelineProgress } from '../src/pipeline-progress.mjs';
 import { commandExists, runCommand } from '../src/process.mjs';
 import { indexProject, writeIndex } from '../src/indexer.mjs';
 import { gitContext, reviewPatch } from '../src/git.mjs';
-import { getPermissionProfile, requirePermission, permissionProfiles } from '../src/permissions.mjs';
+import { getPermissionProfile, requirePermission, permissionProfiles, resolveWithin } from '../src/permissions.mjs';
+import * as guards from '../src/guards.mjs';
+import { existsSync, readFileSync } from 'node:fs';
 import { appendSession, exportSession, sessionId } from '../src/sessions.mjs';
 import { runInteractiveChat } from '../src/interactive.mjs';
 import { McpClient } from '../src/mcp.mjs';
@@ -153,9 +155,39 @@ async function main() {
   if (cmd === 'ask') { const name=flags.provider||'openai',prompt=pos.join(' ').trim();if(!prompt)throw new Error('A prompt is required');if(flags.session==='new')flags.session=sessionId();const result=await askOnce(name,prompt,flags);if(flags.json)print({...result,sessionId:flags.session||null},true);else if(!flags.stream)console.log(result.text);if(!flags.json)usageLine(result);return; }
   if (cmd === 'run') { const name=flags.provider||'openai',prompt=pos.join(' ').trim();if(!prompt)throw new Error('A goal is required');const result=await boundedLoop({provider:getProvider(name),prompt,model:flags.model,maxSteps:clampSteps(flags['max-steps']),onStep:(s,n)=>{if(!flags.json)console.error(`${c.dim}agentic pass ${s}/${n}${c.reset}`)}});if(flags.session)await appendSession(flags.session,{type:'bounded-run',provider:name,prompt,text:result.output,steps:result.steps,converged:result.converged});print(flags.json?result:result.output,flags.json);return; }
   if (cmd === 'chat') { await startChat(flags, pos); return; }
-  if (cmd === 'index') { const root=path.resolve(pos.shift()||process.cwd()),profile=getPermissionProfile(flags.profile);requirePermission(profile,'fileRead','project indexing');const index=await indexProject(root,{maxFiles:flags['max-files']?Number(flags['max-files']):undefined,maxBytes:flags['max-bytes']?Number(flags['max-bytes']):undefined});if(flags.output){requirePermission(profile,'fileWrite','index writing');await writeIndex(index,path.resolve(flags.output));}print(flags.output?{...index,files:undefined,output:path.resolve(flags.output)}:index,true);return; }
+  if (cmd === 'index') {
+    const profile = getPermissionProfile(flags.profile);
+    // Indexing walks a whole tree and puts its contents in front of a model, so the
+    // boundary matters more here than anywhere else: `index C:\Users` on a `read-only`
+    // profile used to be permitted, because "read-only" constrained the verb and not
+    // the object.
+    const root = resolveWithin(profile, pos.shift() || process.cwd(), 'fileRead', 'project indexing');
+    const index = await indexProject(root, {
+      maxFiles: flags['max-files'] ? Number(flags['max-files']) : undefined,
+      maxBytes: flags['max-bytes'] ? Number(flags['max-bytes']) : undefined
+    });
+    let output;
+    if (flags.output) {
+      output = resolveWithin(profile, flags.output, 'fileWrite', 'index writing');
+      await writeIndex(index, output);
+    }
+    print(output ? { ...index, files: undefined, output } : index, true);
+    return;
+  }
   if (cmd === 'git') { const root=path.resolve(pos.shift()||process.cwd());print(await gitContext(root),true);return; }
-  if (cmd === 'patch') { const file=path.resolve(pos.shift()||'');if(!file)throw new Error('A patch file is required');const profile=getPermissionProfile(flags.profile);if(flags.apply)requirePermission(profile,'fileWrite','patch application');print(await reviewPatch(file,{cwd:path.resolve(flags.cwd||process.cwd()),apply:!!flags.apply}),true);return; }
+  if (cmd === 'patch') {
+    const raw = pos.shift();
+    if (!raw) throw new Error('A patch file is required');
+    const profile = getPermissionProfile(flags.profile);
+    // Reading the patch needs fileRead; applying it needs fileWrite. Both are confined:
+    // a patch file is chosen by whoever runs the command, and `patch --apply` writes
+    // wherever the diff's headers point.
+    const file = resolveWithin(profile, raw, 'fileRead', 'patch reading');
+    const cwd = resolveWithin(profile, flags.cwd || process.cwd(), 'fileRead', 'patch target directory');
+    if (flags.apply) requirePermission(profile, 'fileWrite', 'patch application');
+    print(await reviewPatch(file, { cwd, apply: !!flags.apply }), true);
+    return;
+  }
   if (cmd === 'mcp') { const sub=pos.shift(),profile=getPermissionProfile(flags.profile);requirePermission(profile,'shell','MCP process launch');const command=flags.command;if(!command)throw new Error('--command is required');const client=new McpClient(command,flags.args?JSON.parse(flags.args):[],{timeoutMs:flags['timeout-ms']?Number(flags['timeout-ms']):30000});try{await client.start();if(sub==='tools')print(await client.listTools(),true);else if(sub==='call'){if(!flags.tool)throw new Error('--tool is required');print(await client.callTool(flags.tool,flags.input?JSON.parse(flags.input):{}),true);}else throw new Error('Use mcp tools|call');}finally{client.close();}return; }
   if (cmd === 'session') { const sub=pos.shift(),id=pos.shift();if(sub!=='export'||!id)throw new Error('Use session export <id>');const format=flags.format||'jsonl',destination=flags.output?path.resolve(flags.output):undefined,value=await exportSession(id,{format,destination});if(destination)print({sessionId:id,format,output:destination},true);else console.log(value);return; }
   if (cmd === 'completion') { console.log(completion(pos.shift()));return; }
@@ -191,7 +223,14 @@ async function main() {
     const task = flags.task || pos.join(' ').trim();
     if (!task) throw new Error('pipeline run needs --task "<objective>"');
     const hookConfig = await loadHookConfig(root);
-    await fireHooks(hookConfig, 'sessionStart', { pipeline: pipeline.name }, { cwd: root });
+    // Hooks are user-supplied programs that run on every tool call, so they get the same
+    // resource ceiling as the rest of the session. Egress is left alone: a hook that consults
+    // a service is a legitimate design, and isolating it silently would break it.
+    const hookOptions = {
+      cwd: root,
+      limits: guards.limitsForProfile(getPermissionProfile(flags.profile).name),
+    };
+    await fireHooks(hookConfig, 'sessionStart', { pipeline: pipeline.name }, hookOptions);
 
     // A pipeline is waves of parallel stages; a flat event log hides exactly that
     // structure. Render the waves live instead, and keep JSON output untouched.
@@ -207,7 +246,7 @@ async function main() {
         onEvent: event => { progress?.handle(event); },
         invoke: async ({ agent, prompt, stage }) => {
           // A preToolUse hook may veto a stage before any provider call is made.
-          await guardToolUse(hookConfig, 'subagent', { agent: agent.name, stage: stage.name }, { cwd: root });
+          await guardToolUse(hookConfig, 'subagent', { agent: agent.name, stage: stage.name }, hookOptions);
           const response = await askOnce(agent.provider, prompt, {
             ...flags, model: stage.model || agent.model, stream: false, json: true, noPersist: true, quiet: true,
             messages: agent.systemPrompt ? [{ role: 'system', content: agent.systemPrompt }, { role: 'user', content: prompt }] : undefined
@@ -220,7 +259,24 @@ async function main() {
     }
     if (progress) console.error(`  ${progress.summary()}`);
 
-    await fireHooks(hookConfig, 'sessionEnd', { pipeline: pipeline.name, ok: result.ok }, { cwd: root });
+    await fireHooks(hookConfig, 'sessionEnd', { pipeline: pipeline.name, ok: result.ok }, hookOptions);
+
+    // A pipeline run is the one Ultron operation that spends real money at scale and
+    // mutates a working tree, so it is the one that most needs a record nobody can
+    // quietly rewrite afterwards. Fields go through the allowlist before they are
+    // written: `task` is free-form text supplied by whoever ran the command, and a trail
+    // is append-only, so a secret pasted into a task description once is there forever.
+    try {
+      guards.appendAudit(guards.auditPath(), {
+        engine: 'ultron', event: 'pipeline-run',
+        ok: !!result.ok, stageRuns: result.stageRuns ?? null,
+        ...guards.redact({ pipeline: pipeline.name, task, reason: result.reason || '' })
+      });
+    } catch (error) {
+      // A failure to audit must not destroy a completed run's output - but it must be
+      // visible, because an audit trail with silent gaps is worse than none.
+      console.error(`${c.dim}audit: could not append (${error.message})${c.reset}`);
+    }
     if (flags.session) await appendSession(flags.session, { type: 'pipeline', pipeline: pipeline.name, task, ok: result.ok, reason: result.reason, stageRuns: result.stageRuns });
     if (flags.json) print(result, true);
     else {
@@ -315,6 +371,32 @@ async function main() {
   }
   if (cmd === 'ide') { const editor=flags.editor||pos.shift()||'code',target=pos.shift()||process.cwd(),map={code:'code',codium:'codium',cursor:'cursor',antigravity:process.env.ULTRON_ANTIGRAVITY_COMMAND||'antigravity',zed:'zed'},executable=map[editor];if(!executable)throw new Error(`Unsupported editor: ${editor}`);if(!await commandExists(executable))throw new Error(`${executable} is not installed or not on PATH`);await runCommand(executable,[target],{timeoutMs:15000});return; }
   if (cmd === 'permissions') { print(permissionProfiles,true);return; }
+  if (cmd === 'audit') {
+    // Ultron had permission profiles but no record of what it actually did with them.
+    // The trail is hash-chained and byte-compatible with Alfred's, so either system can
+    // verify the other's history rather than each having to be trusted on its own word.
+    const sub = pos.shift() || 'verify';
+    const file = guards.auditPath();
+    if (sub === 'verify') {
+      const state = guards.verifyAudit(file);
+      print({ auditLog: file, ...state }, true);
+      if (!state.ok) process.exitCode = 2;
+      return;
+    }
+    if (sub === 'checkpoint') {
+      // A hash chain cannot detect its own tail being cut off. A witness stored apart
+      // from the log can, which is the only reason this subcommand exists.
+      print({ checkpoint: `${file}.checkpoints`, ...guards.checkpointAudit(file, `${file}.checkpoints`) }, true);
+      return;
+    }
+    if (sub === 'show') {
+      const limit = Number(flags.limit || 20);
+      const lines = existsSync(file) ? readFileSync(file, 'utf8').split('\n').filter(Boolean).slice(-limit) : [];
+      print(lines.map(l => { try { return JSON.parse(l); } catch { return { malformed: l }; } }), true);
+      return;
+    }
+    throw new Error(`Unknown audit subcommand '${sub}'. Use verify, checkpoint or show.`);
+  }
   throw new Error(`Unknown command: ${cmd}`);
 }
 main().catch(error=>{fail(error.message);process.exitCode=1});
