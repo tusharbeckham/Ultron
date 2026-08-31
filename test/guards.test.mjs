@@ -268,7 +268,7 @@ test('no limits means no wrapper at all', () => {
 
 test('egress isolation wraps outermost', () => {
   const r = guards.confineArgv(['python3'], { memoryBytes: 1024 },
-    { platform: 'linux', isolateNetwork: true });
+    { platform: 'linux', isolateNetwork: true, netnsAvailable: true });
   assert.equal(r.argv[0], 'unshare');
   assert.ok(r.argv.includes('--map-current-user'), 'must not pretend the child is root');
   assert.ok(!r.argv.includes('--map-root-user'));
@@ -278,9 +278,34 @@ test('egress isolation wraps outermost', () => {
 });
 
 test('egress isolation alone still wraps', () => {
-  const r = guards.confineArgv(['curl'], {}, { platform: 'linux', isolateNetwork: true });
+  const r = guards.confineArgv(['curl'], {},
+    { platform: 'linux', isolateNetwork: true, netnsAvailable: true });
   assert.equal(r.argv[0], 'unshare');
   assert.deepEqual(r.applied, ['netns']);
+});
+
+test('isolation requested but unavailable runs unwrapped and admits it', () => {
+  // A kernel that forbids unprivileged user namespaces cannot provide this control. Wrapping
+  // anyway made every isolated call fail to spawn at all - a control that becomes an outage
+  // when unavailable gets switched off, which is the worst outcome. So it runs, and says so.
+  const r = guards.confineArgv(['curl'], { memoryBytes: 1024 },
+    { platform: 'linux', isolateNetwork: true, netnsAvailable: false });
+  assert.equal(r.argv[0], 'prlimit', 'the rlimits must still apply');
+  assert.ok(!r.argv.includes('unshare'));
+  assert.ok(r.applied.includes('netns-unavailable'));
+  assert.ok(!/netns\b/.test(r.note.replace('netns-unavailable', '')),
+    'the note must not claim isolation it did not apply');
+});
+
+test('an unavailable namespace does not fake a confinement note', () => {
+  const r = guards.confineArgv(['curl'], {},
+    { platform: 'linux', isolateNetwork: true, netnsAvailable: false });
+  assert.equal(r.note, 'no limits configured');
+  assert.deepEqual(r.argv, ['curl']);
+});
+
+test('availability is always false on windows', () => {
+  assert.equal(guards.networkIsolationAvailable('win32'), false);
 });
 
 test('fractional limits are floored, never passed through as decimals', () => {

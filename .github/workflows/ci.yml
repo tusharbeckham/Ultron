@@ -1,0 +1,91 @@
+# Runs Ultron's test suite on both platforms it claims to support.
+#
+# BOTH platforms, not one, and that is the whole point of this file. Ultron now does
+# Windows path resolution (8.3 short names, alternate data streams, device names) and
+# POSIX process confinement (prlimit, unshare). Each of those can only be exercised on
+# the platform it is written for, so a single-OS matrix would leave half the security
+# surface untested while the badge stayed green.
+#
+# This was not a hypothetical. Alfred's CI caught an 8.3 short-name bug that 659 local
+# tests missed, because the failure only reproduces when the temp path contains a
+# shortened component - which it does on a runner (RUNNER~1) and does not on the
+# author's machine. Ultron shares that code by design, so it needs the same exposure.
+#
+# No install step, deliberately. package.json has no dependencies block; if this job
+# ever needs `npm ci` to fetch something, that is the regression, not a missing step.
+name: tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  tests:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        # Oldest supported (package.json engines says >=20) and current. The versions
+        # between are covered by implication and would only buy runner minutes.
+        os: [ubuntu-latest, windows-latest]
+        node-version: ['20', '22']
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node-version }}
+
+      - name: Suite
+        run: npm test
+
+      - name: Syntax check every module
+        # `node --test` only loads what the tests import. A module nothing imports yet can
+        # still be shipped broken, and bin/ultron.mjs is the one file every user runs.
+        shell: bash
+        run: |
+          for f in bin/ultron.mjs src/*.mjs scripts/*.mjs; do
+            node --check "$f" || exit 1
+          done
+          echo "all modules parse"
+
+      - name: POSIX confinement, end to end
+        # The ONLY place the prlimit/unshare wrapping is actually executed. On Windows
+        # confineArgv returns an unchanged argv by design, so every check here would be a
+        # vacuous pass - which is why this step is Linux-only rather than skipped inside
+        # the script.
+        #
+        # It spends real resources and expects the kernel to refuse: a 400 MB allocation
+        # under a 64 MB ceiling, an over-limit write against --fsize, and an isolated child
+        # that cannot open a socket. Each negative is paired with a control proving the
+        # same operation succeeds unconfined, so a machine with no memory pressure or no
+        # network cannot produce a false pass.
+        #
+        # If the runner's kernel forbids unprivileged user namespaces the egress checks
+        # report SKIP rather than failing, because a control the kernel cannot provide is
+        # not a bug in this repository.
+        if: runner.os == 'Linux'
+        run: node scripts/verify-confine-posix.mjs
+
+      - name: Windows path confinement is actually exercised
+        # A one-line assurance that the Windows-specific guards ran rather than being
+        # skipped: safeResolve must refuse a device name and expand a real 8.3 alias.
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          node -e "
+            import('./src/guards.mjs').then(g => {
+              try { g.safeResolve('C:\\\\p\\\\CON'); throw new Error('device name was ALLOWED'); }
+              catch (e) { if (!/Windows device/.test(e.message)) throw e; }
+              const r = g.safeResolve('C:\\\\PROGRA~1\\\\nope.txt');
+              if (/~\d/.test(r)) throw new Error('8.3 name survived resolution: ' + r);
+              if (!/Program Files/.test(r)) throw new Error('not expanded: ' + r);
+              console.log('windows path guards exercised:', r);
+            }).catch(e => { console.error(e.message); process.exit(1); });
+          "

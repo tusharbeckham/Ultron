@@ -22,6 +22,7 @@
 // Zero dependencies, as everywhere else in this CLI.
 
 import { createHash, randomBytes, createHmac, timingSafeEqual } from 'node:crypto';
+import { spawnSync } from 'node:child_process';
 import { existsSync, mkdirSync, appendFileSync, readFileSync, realpathSync, statSync, writeFileSync, renameSync } from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
@@ -402,9 +403,36 @@ export class TokenBucket {
 export const PRLIMIT = 'prlimit';
 export const NETNS_PREFIX = Object.freeze(['unshare', '--user', '--map-current-user', '--net', '--']);
 
+let _netnsAvailable = null;
+
+/**
+ * Can this machine isolate a child's network? Probed once, then cached.
+ *
+ * Probed rather than assumed. `unshare` exists on essentially every Linux, but whether an
+ * *unprivileged* user may create namespaces depends on kernel configuration and on whatever
+ * container the CLI might be running inside — a bare `unshare --net` returns "Operation not
+ * permitted" without the user namespace, and some hardened kernels refuse even that.
+ *
+ * Without this probe, requesting isolation on a machine that cannot provide it made every
+ * isolated call fail to spawn at all, rather than running unisolated and saying so. A control
+ * that turns into an outage when unavailable gets switched off, which is the worst outcome.
+ */
+export function networkIsolationAvailable(platform = process.platform) {
+  if (platform === 'win32') return false;
+  if (_netnsAvailable !== null) return _netnsAvailable;
+  try {
+    const probe = spawnSync(NETNS_PREFIX[0], [...NETNS_PREFIX.slice(1), 'true'],
+      { stdio: 'ignore', timeout: 15000, shell: false });
+    _netnsAvailable = probe.status === 0;
+  } catch {
+    _netnsAvailable = false;
+  }
+  return _netnsAvailable;
+}
+
 /** Build the wrapped argv. Returns `{ argv, applied, note }` — `applied` lists what actually
  *  got wrapped, so a caller can log what happened rather than what was requested. */
-export function confineArgv(argv, limits = {}, { isolateNetwork = false, platform = process.platform } = {}) {
+export function confineArgv(argv, limits = {}, { isolateNetwork = false, platform = process.platform, netnsAvailable = null } = {}) {
   const applied = [];
   if (platform === 'win32') {
     return { argv: [...argv], applied, note: 'windows: no argv-level confinement available' };
@@ -426,14 +454,24 @@ export function confineArgv(argv, limits = {}, { isolateNetwork = false, platfor
   // The order matters for readability more than behaviour, but it also means prlimit's own
   // process is inside the namespace rather than outside it.
   if (isolateNetwork) {
-    out = [...NETNS_PREFIX, ...out];
-    applied.push('netns');
+    // `netnsAvailable` is injectable so tests can assert both branches without depending on
+    // the kernel they happen to run on.
+    const available = netnsAvailable ?? networkIsolationAvailable(platform);
+    if (available) {
+      out = [...NETNS_PREFIX, ...out];
+      applied.push('netns');
+    } else {
+      // Requested and not possible. Run anyway, but say so - a caller that assumed egress was
+      // blocked needs to be able to find out that it was not.
+      applied.push('netns-unavailable');
+    }
   }
 
+  const real = applied.filter(a => a !== 'netns-unavailable');
   return {
     argv: out,
     applied,
-    note: applied.length ? `confined: ${applied.join('+')}` : 'no limits configured',
+    note: real.length ? `confined: ${real.join('+')}` : 'no limits configured',
   };
 }
 

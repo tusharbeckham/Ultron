@@ -1,5 +1,7 @@
 # Ultron CLI
 
+[![tests](https://github.com/tusharbeckham/Ultron/actions/workflows/ci.yml/badge.svg)](https://github.com/tusharbeckham/Ultron/actions/workflows/ci.yml)
+
 A secure, **dependency-free**, model-agnostic developer CLI for Node.js 20+. Local-first
 interactive chat, subagent DAG pipelines with **explicit quality gates**, lifecycle hooks,
 remote MCP, browser OAuth, project intelligence, and resilient provider adapters — with zero
@@ -11,7 +13,12 @@ ultron "explain this error"    # ask and stay in the session
 ultron pipeline run feature --task "add pagination to /users"
 ```
 
-**Verified:** `npm test` → **324 tests passing**, serial and deterministic, zero dependencies.
+**Verified:** `npm test` → **328 tests passing**, serial and deterministic, zero dependencies.
+CI runs the suite on **Linux and Windows** across Node 20 and 22, because the path guards are
+Windows-specific and the process confinement is POSIX-specific — a single-OS matrix would leave
+half the security surface untested while the badge stayed green. The Linux job additionally runs
+`scripts/verify-confine-posix.mjs`, the only place the `prlimit`/`unshare` wrapping is actually
+executed.
 
 ## What makes it different
 

@@ -67,6 +67,9 @@ try {
 
 console.log('\n--- runCommand: egress ---');
 
+const netns = guards.networkIsolationAvailable();
+console.log(`  network isolation available: ${netns}`);
+
 let controlHasNet = false;
 try {
   const r = await runCommand('python3', ['-c', NET], { timeoutMs: 60000 });
@@ -76,23 +79,29 @@ try {
   check('CONTROL: the probe reaches the network unisolated', false, String(e.message).slice(0, 40));
 }
 
-try {
-  const r = await runCommand('python3', ['-c', NET], {
-    timeoutMs: 60000, isolateNetwork: true, limits: { memoryBytes: 256 * 1024 * 1024 },
-  });
-  check('an isolated child cannot reach the network', !r.stdout.includes('CONNECT 0'), r.stdout.slice(0, 24));
-  check('the note reports egress isolation', /netns/.test(r.confinement), r.confinement);
-} catch (e) {
-  check('an isolated child cannot reach the network', false, String(e.message).slice(0, 60));
-}
+if (!netns) {
+  // Reported, not silently skipped, and not failed either: a kernel that forbids unprivileged
+  // namespaces cannot provide this control, and pretending otherwise would be the lie.
+  console.log('  SKIP  egress checks: this kernel does not permit unprivileged network namespaces');
+} else {
+  try {
+    const r = await runCommand('python3', ['-c', NET], {
+      timeoutMs: 60000, isolateNetwork: true, limits: { memoryBytes: 256 * 1024 * 1024 },
+    });
+    check('an isolated child cannot reach the network', !r.stdout.includes('CONNECT 0'), r.stdout.slice(0, 24));
+    check('the note reports egress isolation', /netns/.test(r.confinement), r.confinement);
+  } catch (e) {
+    check('an isolated child cannot reach the network', false, String(e.message).slice(0, 60));
+  }
 
-try {
-  const r = await runCommand('python3', ['-c', 'import os; print("uid", os.getuid())'], {
-    timeoutMs: 60000, isolateNetwork: true,
-  });
-  check('an isolated child keeps its real uid', !r.stdout.includes('uid 0'), r.stdout.slice(0, 20));
-} catch (e) {
-  check('an isolated child keeps its real uid', false, String(e.message).slice(0, 60));
+  try {
+    const r = await runCommand('python3', ['-c', 'import os; print("uid", os.getuid())'], {
+      timeoutMs: 60000, isolateNetwork: true,
+    });
+    check('an isolated child keeps its real uid', !r.stdout.includes('uid 0'), r.stdout.slice(0, 20));
+  } catch (e) {
+    check('an isolated child keeps its real uid', false, String(e.message).slice(0, 60));
+  }
 }
 
 console.log('\n--- runHook: the most frequently executed untrusted thing ---');
@@ -107,7 +116,11 @@ r = await runHook(hook({ args: ['-c', ALLOC] }), {}, { limits: { memoryBytes: 64
 check('a hook cannot exceed its memory ceiling', !r.ok, `ok=${r.ok} exit=${r.exitCode}`);
 
 r = await runHook(hook({ args: ['-c', NET] }), {}, { isolateNetwork: true });
-check('an isolated hook cannot reach the network', !r.stdout.includes('CONNECT 0'), r.stdout.trim().slice(0, 24));
+if (netns) {
+  check('an isolated hook cannot reach the network', !r.stdout.includes('CONNECT 0'), r.stdout.trim().slice(0, 24));
+} else {
+  console.log('  SKIP  an isolated hook cannot reach the network (no unprivileged netns)');
+}
 
 r = await runHook(hook({ args: ['-c', 'import sys; sys.stdout.write("x"*5000000)'] }), {});
 check('hook output is still capped', r.stdout.length < 2 * 1024 * 1024, `${r.stdout.length} bytes`);
