@@ -36,8 +36,19 @@ test('trailing dots and spaces are refused but . and .. are not', () => {
   assert.doesNotThrow(() => guards.safeResolve('./a/../b', tmp()));
 });
 
-test('8.3 short names are refused', () => {
-  assert.throws(() => guards.safeResolve('C:\\PROGRA~1\\x'), /short name/);
+test('an unresolvable 8.3 short name is refused', () => {
+  assert.throws(() => guards.safeResolve('C:\\NOSUCH~1\\x'), /short name/);
+});
+
+test('a resolvable 8.3 short name is expanded rather than refused', () => {
+  // A short name is only a problem if it SURVIVES resolution. Refusing ~N up front rejected
+  // legitimate paths whose ancestor happens to be shortened - C:\Users\RUNNER~1\... on a CI
+  // runner, or any username long enough for Windows to abbreviate. Expanding first is also
+  // stronger: confinement then judges the real location instead of the abbreviation.
+  if (process.platform !== 'win32') return;   // 8.3 aliases are a Windows/NTFS feature
+  const resolved = guards.safeResolve('C:\\PROGRA~1\\does-not-exist-yet.txt');
+  assert.ok(!/~\d/.test(resolved), `a short name survived: ${resolved}`);
+  assert.match(resolved, /Program Files/);
 });
 
 test('a NUL byte is refused', () => {

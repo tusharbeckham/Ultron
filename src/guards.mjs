@@ -97,17 +97,37 @@ export function safeResolve(raw, base = process.cwd()) {
     if (component !== '.' && component !== '..' && /[ .]$/.test(component)) {
       throw new GuardError(`path component '${component}' has trailing dots/spaces (Windows strips these, so the checked path is not the used path)`);
     }
-    if (SHORT_NAME_RE.test(component)) {
-      throw new GuardError('path contains an 8.3 short name (~N); supply the long path');
-    }
   }
 
+  // 8.3 short names are checked AFTER resolution, not before. `realpath` expands them, and a
+  // short component is only a problem if it SURVIVES that. Refusing them up front rejected a
+  // legitimate path whose ancestor happens to be shortened - `C:\Users\RUNNER~1\...` on a CI
+  // runner, or any username long enough for Windows to abbreviate. Alfred hit exactly that and
+  // its CI caught it; this keeps the two engines agreeing, which a parity test enforces.
+  const resolved = resolvePreservingTail(absolute);
+  if (SHORT_NAME_RE.test(resolved)) {
+    throw new GuardError('path contains an unresolvable 8.3 short name (~N); supply the long path');
+  }
+  return resolved;
+}
+
+/** realpath, falling back to the deepest existing ancestor when the target does not exist.
+ *
+ *  Uses `realpathSync.native` rather than `realpathSync`: the JS implementation does NOT expand
+ *  8.3 short names on Windows (`C:\PROGRA~1` comes back unchanged), whereas the native one goes
+ *  through the Win32 API and returns `C:\Program Files`. Without that, Ultron would refuse
+ *  legitimate paths under a shortened ancestor while Alfred accepted them, and a parity test
+ *  would - and did - catch the divergence. */
+function resolvePreservingTail(absolute) {
+  const real = p => {
+    try { return realpathSync.native(p); } catch { return realpathSync(p); }
+  };
   try {
-    return realpathSync(absolute);
+    return real(absolute);
   } catch {
-    // The path does not exist yet — legitimate for a file about to be written. Resolve
-    // the deepest existing ancestor instead, so a junction anywhere ABOVE the target
-    // is still followed and still confined.
+    // The path does not exist yet — legitimate for a file about to be written. Resolve the
+    // deepest existing ancestor instead, so a junction anywhere ABOVE the target is still
+    // followed and still confined, and a shortened ancestor is still expanded.
     let current = absolute;
     const trailing = [];
     for (let i = 0; i < 64; i += 1) {
@@ -116,7 +136,7 @@ export function safeResolve(raw, base = process.cwd()) {
       trailing.unshift(path.basename(current));
       current = parent;
       if (existsSync(current)) {
-        try { return path.join(realpathSync(current), ...trailing); } catch { break; }
+        try { return path.join(real(current), ...trailing); } catch { break; }
       }
     }
     return path.normalize(absolute);
