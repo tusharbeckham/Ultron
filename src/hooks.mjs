@@ -4,9 +4,16 @@
 import { spawn } from 'node:child_process';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
+import { boundedCapture, confineArgv } from './guards.mjs';
 
 export const HOOK_EVENTS = Object.freeze(['sessionStart', 'preToolUse', 'postToolUse', 'sessionEnd']);
 const DEFAULT_TIMEOUT_MS = 5000;
+
+// A hook is a user-supplied program. Accumulating its output without a bound turns
+// "the hook printed a lot" into "the CLI ran out of memory", and a preToolUse hook runs
+// on every single tool call — so a chatty hook is not an unusual case, it is the
+// expected one. 1 MiB is far more than any veto decision needs to explain itself.
+const HOOK_OUTPUT_LIMIT = 1024 * 1024;
 
 export async function loadHookConfig(root = process.cwd(), { file } = {}) {
   const target = file || path.join(root, '.ultron', 'hooks.json');
@@ -41,37 +48,48 @@ export function matches(hook, toolName) {
 }
 
 /** Run one hook. Never throws: a failure is data, so a broken hook cannot kill the session. */
-export function runHook(hook, payload, { spawnImpl = spawn, cwd = process.cwd(), env = process.env } = {}) {
+export function runHook(hook, payload, { spawnImpl = spawn, cwd = process.cwd(), env = process.env,
+                                        limits = null, isolateNetwork = false } = {}) {
   return new Promise(resolve => {
     let child;
+    // A hook is a user-supplied program that runs on EVERY tool call, which makes it the most
+    // frequently executed untrusted thing in the CLI. Wrapping argv with prlimit/unshare keeps
+    // it argv-only and shell-free while giving it a ceiling on Linux.
+    const { argv, note } = confineArgv([hook.command, ...hook.args], limits || {}, { isolateNetwork });
     try {
-      child = spawnImpl(hook.command, hook.args, { cwd, env, shell: false, stdio: ['pipe', 'pipe', 'pipe'] });
+      child = spawnImpl(argv[0], argv.slice(1), { cwd, env, shell: false, stdio: ['pipe', 'pipe', 'pipe'] });
     } catch (error) {
-      resolve({ ok: false, timedOut: false, exitCode: null, stdout: '', stderr: String(error.message || error), error: 'spawn-failed' });
+      resolve({ ok: false, timedOut: false, exitCode: null, stdout: '', stderr: String(error.message || error), error: 'spawn-failed', confinement: note });
       return;
     }
-    let stdout = '', stderr = '', finished = false;
+    let stdout = boundedCapture(HOOK_OUTPUT_LIMIT), stderr = boundedCapture(HOOK_OUTPUT_LIMIT);
+    let finished = false;
     const timer = setTimeout(() => {
       if (finished) return;
       finished = true;
       try { child.kill('SIGKILL'); } catch { /* already gone */ }
-      resolve({ ok: false, timedOut: true, exitCode: null, stdout, stderr, error: 'timeout' });
+      resolve({ ok: false, timedOut: true, exitCode: null, stdout: stdout.value, stderr: stderr.value, error: 'timeout', confinement: note });
     }, hook.timeoutMs);
     timer.unref?.();
 
     child.stdout?.setEncoding?.('utf8');
     child.stderr?.setEncoding?.('utf8');
-    child.stdout?.on('data', chunk => { stdout += chunk; });
-    child.stderr?.on('data', chunk => { stderr += chunk; });
+    child.stdout?.on('data', chunk => { stdout.push(chunk); });
+    child.stderr?.on('data', chunk => { stderr.push(chunk); });
     child.on('error', error => {
       if (finished) return;
       finished = true; clearTimeout(timer);
-      resolve({ ok: false, timedOut: false, exitCode: null, stdout, stderr: String(error.message || error), error: 'spawn-failed' });
+      resolve({ ok: false, timedOut: false, exitCode: null, stdout: stdout.value, stderr: String(error.message || error), error: 'spawn-failed' });
     });
     child.on('close', code => {
       if (finished) return;
       finished = true; clearTimeout(timer);
-      resolve({ ok: code === 0, timedOut: false, exitCode: code, stdout, stderr });
+      // `confinement` is reported on EVERY resolve path, not just the failures. It was
+      // originally only on the spawn-failed branch, which meant a hook that ran successfully
+      // said nothing about whether it had been confined — so the one case you would actually
+      // want to audit was the one case with no record of it. Caught by the end-to-end Linux
+      // verification, not by a unit test.
+      resolve({ ok: code === 0, timedOut: false, exitCode: code, stdout: stdout.value, stderr: stderr.value, truncated: stdout.truncated || stderr.truncated, confinement: note });
     });
 
     // The payload goes on stdin — never interpolated into a command line.

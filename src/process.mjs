@@ -1,15 +1,50 @@
 import { spawn } from 'node:child_process';
-export function runCommand(command,args,{cwd=process.cwd(),env=process.env,timeoutMs=600000}={}){
-  return new Promise((resolve,reject)=>{
-    const child=spawn(command,args,{cwd,env,stdio:['ignore','pipe','pipe'],shell:false});
-    let out='',err='';
-    const timer=setTimeout(()=>{child.kill('SIGTERM'); reject(new Error(`Command timed out after ${timeoutMs}ms`));},timeoutMs);
-    child.stdout.on('data',d=>out+=d); child.stderr.on('data',d=>err+=d);
-    child.on('error',e=>{clearTimeout(timer);reject(e)});
-    child.on('close',code=>{clearTimeout(timer); code===0?resolve({stdout:out.trim(),stderr:err.trim()}):reject(new Error(err.trim()||`${command} exited ${code}`));});
+import { boundedCapture, confineArgv } from './guards.mjs';
+
+// Output is capped. `out += d` on a child that writes gigabytes takes the CLI down with it,
+// and the size of a command's output usually depends on the state of the machine rather than
+// on anything the caller chose — so it is not a case you can rule out by only running trusted
+// commands.
+const OUTPUT_LIMIT = 4 * 1024 * 1024;
+
+export function runCommand(command, args, {
+  cwd = process.cwd(), env = process.env, timeoutMs = 600000,
+  outputLimit = OUTPUT_LIMIT, limits = null, isolateNetwork = false,
+} = {}) {
+  return new Promise((resolve, reject) => {
+    // Resource ceilings and egress isolation are applied by wrapping argv (see confineArgv).
+    // Still shell: false — the wrapper is an argv array and the real command follows it.
+    const { argv, note } = confineArgv([command, ...args], limits || {}, { isolateNetwork });
+    const child = spawn(argv[0], argv.slice(1), { cwd, env, stdio: ['ignore', 'pipe', 'pipe'], shell: false });
+    const out = boundedCapture(outputLimit), err = boundedCapture(outputLimit);
+    let settled = false;
+    const finish = fn => (...a) => { if (settled) return; settled = true; clearTimeout(timer); fn(...a); };
+
+    const timer = setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      // SIGTERM then reject. The child is also killed on the hard path below so a
+      // process that ignores SIGTERM cannot outlive the call that started it.
+      try { child.kill('SIGTERM'); } catch { /* already gone */ }
+      setTimeout(() => { try { child.kill('SIGKILL'); } catch { /* gone */ } }, 2000).unref?.();
+      reject(new Error(`Command timed out after ${timeoutMs}ms`));
+    }, timeoutMs);
+    timer.unref?.();
+
+    child.stdout.on('data', d => out.push(d));
+    child.stderr.on('data', d => err.push(d));
+    child.on('error', finish(e => reject(e)));
+    child.on('close', finish(code => {
+      if (code === 0) {
+        resolve({ stdout: out.value.trim(), stderr: err.value.trim(), truncated: out.truncated || err.truncated, confinement: note });
+      } else {
+        reject(new Error(err.value.trim() || `${command} exited ${code}`));
+      }
+    }));
   });
 }
-export async function commandExists(command){
-  const checker=process.platform==='win32'?'where':'which';
-  try{await runCommand(checker,[command],{timeoutMs:3000});return true}catch{return false}
+
+export async function commandExists(command) {
+  const checker = process.platform === 'win32' ? 'where' : 'which';
+  try { await runCommand(checker, [command], { timeoutMs: 3000 }); return true; } catch { return false; }
 }

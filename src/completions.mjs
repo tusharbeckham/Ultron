@@ -3,7 +3,7 @@
 export const commands = [
   'providers', 'capabilities', 'models', 'registry', 'route', 'doctor',
   'ask', 'run', 'chat', 'index', 'git', 'patch', 'mcp', 'session',
-  'agents', 'pipeline', 'notion', 'completion', 'serve', 'permissions', 'ide', 'help'
+  'agents', 'pipeline', 'notion', 'completion', 'serve', 'permissions', 'audit', 'ide', 'help'
 ];
 export const providerNames = ['alfred', 'openai', 'anthropic', 'kimi', 'deepseek', 'zai', 'local', 'custom', 'kiro', 'claude-code', 'openclaw'];
 export const subcommands = Object.freeze({
@@ -11,6 +11,7 @@ export const subcommands = Object.freeze({
   notion: ['login', 'status', 'logout', 'tools', 'call', 'search', 'page'],
   mcp: ['tools', 'call'],
   session: ['export'],
+  audit: ['verify', 'checkpoint', 'show'],
   completion: ['bash', 'zsh', 'fish', 'powershell']
 });
 
