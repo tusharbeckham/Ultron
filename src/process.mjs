@@ -29,7 +29,10 @@ export function runCommand(command, args, {
       setTimeout(() => { try { child.kill('SIGKILL'); } catch { /* gone */ } }, 2000).unref?.();
       reject(new Error(`Command timed out after ${timeoutMs}ms`));
     }, timeoutMs);
-    timer.unref?.();
+    // Not unref'd, for the same reason as in hooks.mjs: this is the timer that enforces the
+    // timeout, and an unref'd timer cannot keep the loop alive to fire. It is cleared on every
+    // settle path. The SIGKILL escalation above IS unref'd, correctly - that one is
+    // fire-and-forget cleanup and has no business holding the process open.
 
     child.stdout.on('data', d => out.push(d));
     child.stderr.on('data', d => err.push(d));

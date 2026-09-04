@@ -140,7 +140,12 @@ export async function startLoopbackReceiver({ expectedState, timeoutMs = 300000,
   const { port } = server.address();
   const timer2 = setTimeout(() => { settle.reject(new Error(`Timed out after ${timeoutMs}ms waiting for the OAuth callback`)); shutdown(); }, timeoutMs);
   timer = timer2;
-  timer2.unref?.();
+  // NOT unref'd. The listening server above is unref'd on purpose - an idle socket has no
+  // business holding the process open - but that leaves this timer as the only thing that can
+  // keep the loop alive long enough to fire, and an unref'd timer cannot. With both unref'd,
+  // nothing kept the loop alive and the promise never settled: Linux CI reported it as four
+  // cancelled tests. `settle` clears it on both resolve and reject, so not unref'ing cannot
+  // hold the process open past the callback.
 
   return {
     port,

@@ -19,6 +19,7 @@ import { PipelineProgress } from '../src/pipeline-progress.mjs';
 import { commandExists, runCommand } from '../src/process.mjs';
 import { indexProject, writeIndex } from '../src/indexer.mjs';
 import { gitContext, reviewPatch } from '../src/git.mjs';
+import { geminiConfigured, getStagedDiff, getBranchDiff, getDiffStat, generateCommitMessage, generatePRSummary, generateCodeReview, generateChangelog } from '../src/gemini.mjs';
 import { getPermissionProfile, requirePermission, permissionProfiles, resolveWithin } from '../src/permissions.mjs';
 import * as guards from '../src/guards.mjs';
 import { existsSync, readFileSync } from 'node:fs';
@@ -31,7 +32,7 @@ import { serveAgent } from '../src/agent-protocol.mjs';
 const BOOLEAN_FLAGS = new Set(['trust-all','stream','json','apply','no-browser']);
 function parse(argv) { const flags = {}, pos = []; for (let i = 0; i < argv.length; i++) { const x = argv[i]; if (x.startsWith('--')) { const k = x.slice(2); if (BOOLEAN_FLAGS.has(k)) flags[k] = true; else { if (argv[i + 1] == null || argv[i + 1].startsWith('--')) throw new Error(`--${k} requires a value`); flags[k] = argv[++i]; } } else pos.push(x); } return { pos, flags }; }
 const print = (value, json = false) => console.log(json || typeof value !== 'string' ? JSON.stringify(value, null, 2) : value);
-function help() { console.log(`${banner()}\n\nUsage:\n  ultron providers | capabilities [--provider <name>] | models --provider <name>\n  ultron ask|run|chat --provider <name> [--stream] [--json] [--session <id>] <prompt>\n  ultron index [path] [--output <file>]\n  ultron git [path] | patch <file> [--apply --profile balanced]\n  ultron mcp tools|call --command <executable> [--args '["..."]'] [--tool <name>] [--input '{}']\n  ultron session export <id> [--format jsonl|json|md] [--output <file>]\n  ultron completion bash|zsh|fish|powershell\n  ultron serve --provider <name>\n  ultron notion login [--path mcp|rest] [--no-browser] | notion status | notion logout\n  ultron notion tools | notion call --tool <name> [--input '{}']\n  ultron notion search <query> | notion page <id>\n  ultron agents | pipeline plan|graph|run <name> [--task "..."] [--budget N]\n  ultron registry [--provider <name>] | route "<task>"\n  ultron ide --editor code|codium|cursor|antigravity|zed [path]\n\nSecurity defaults: read-only permission profile, environment-only credentials, redacted sessions, no automatic shell execution.`); }
+function help() { console.log(`${banner()}\n\nUsage:\n  ultron providers | capabilities [--provider <name>] | models --provider <name>\n  ultron ask|run|chat --provider <name> [--stream] [--json] [--session <id>] <prompt>\n  ultron index [path] [--output <file>]\n  ultron git [path] | patch <file> [--apply --profile balanced]\n  ultron ai commit | ai pr [--base main] | ai review [--base main] | ai changelog [--base main]\n  ultron mcp tools|call --command <executable> [--args '["..."]'] [--tool <name>] [--input '{}']\n  ultron session export <id> [--format jsonl|json|md] [--output <file>]\n  ultron completion bash|zsh|fish|powershell\n  ultron serve --provider <name>\n  ultron notion login [--path mcp|rest] [--no-browser] | notion status | notion logout\n  ultron notion tools | notion call --tool <name> [--input '{}']\n  ultron notion search <query> | notion page <id>\n  ultron agents | pipeline plan|graph|run <name> [--task \"...\"] [--budget N]\n  ultron registry [--provider <name>] | route \"<task>\"\n  ultron ide --editor code|codium|cursor|antigravity|zed [path]\n\nSecurity defaults: read-only permission profile, environment-only credentials, redacted sessions, no automatic shell execution.`); }
 async function providerRows() { const rows = []; for (const [name,p] of Object.entries(providers)) { let ok = p.configured(); if (p.available) ok = ok && await p.available(); rows.push(line(name, `${p.description} · ${status(ok)}`)); } return rows; }
 function requestOpts(flags, extra = {}) { return { model: flags.model, stream: !!flags.stream, timeoutMs: flags['timeout-ms'] ? Number(flags['timeout-ms']) : undefined, maxRetries: flags['max-retries'] ? Number(flags['max-retries']) : undefined, trustAll: flags['trust-all'], onRetry: info => { if (!flags.json) console.error(`${c.dim}retry ${info.attempt} in ${Math.round(info.delayMs)}ms${info.status ? ` · HTTP ${info.status}` : ''}${c.reset}`); }, ...extra }; }
 async function askOnce(name, prompt, flags = {}) { const provider = getProvider(name), opts = requestOpts(flags, { messages: flags.messages, signal: flags.signal, onToken: flags.onToken || (token => { if (flags.stream && !flags.json) process.stdout.write(token); }) }); const waiting = (!flags.stream && !flags.json && !flags.quiet) ? spinner(`${name}${flags.model ? ` · ${flags.model}` : ''} thinking`, { stream: process.stderr }) : null; let result; try { result = provider.askDetailed ? await provider.askDetailed(prompt, opts) : { provider: name, model: flags.model || null, text: await provider.ask(prompt, opts), usage: null, estimatedCostUsd: null, rateLimit: {} }; } catch (error) { waiting?.fail(`${name} failed`); throw error; } waiting?.succeed(`${name}${result.model ? ` · ${result.model}` : ''}`); if (flags.stream && !flags.json) process.stdout.write('\n'); if (flags.session && !flags.noPersist) { await appendSession(flags.session, { type: 'turn', provider: name, model: result.model, prompt, text: result.text, usage: result.usage }); } return result; }
@@ -175,6 +176,82 @@ async function main() {
     return;
   }
   if (cmd === 'git') { const root=path.resolve(pos.shift()||process.cwd());print(await gitContext(root),true);return; }
+  if (cmd === 'ai') {
+    const sub = pos.shift();
+    if (!sub) throw new Error('Usage: ultron ai commit | pr | review | changelog');
+    if (!geminiConfigured()) throw new Error(
+      'GEMINI_API_KEY is not set.\n' +
+      '  1. Get a key from https://aistudio.google.com/\n' +
+      '  2. Add to .env:   GEMINI_API_KEY=your-key\n' +
+      '  3. Or export it:  $env:GEMINI_API_KEY = "your-key"'
+    );
+    const cwd = path.resolve(flags.cwd || process.cwd());
+    const base = flags.base || 'main';
+    const warn = msg => console.error(`${c.yellow}warning${c.reset} ${msg}`);
+
+    if (sub === 'commit') {
+      const diff = await getStagedDiff(cwd, { onWarn: warn });
+      if (!diff) { fail('No staged changes found. Stage your files first with `git add`.'); process.exitCode = 1; return; }
+      const wait = spinner('Gemini is writing your commit message', { stream: process.stderr });
+      let msg;
+      try { msg = await generateCommitMessage(diff); wait.succeed('Commit message ready'); }
+      catch (e) { wait.fail('Gemini failed'); throw e; }
+      console.log(`\n${c.cyan}Proposed commit message:${c.reset}\n`);
+      console.log(msg);
+      console.log();
+      const rl = readline.createInterface({ input, output });
+      const answer = await rl.question(`${c.bold}Commit with this message? [y/N]:${c.reset} `);
+      rl.close();
+      if (answer.trim().toLowerCase() === 'y') {
+        await runCommand('git', ['commit', '-m', msg], { cwd });
+        console.log(`${c.green}✓${c.reset} Committed successfully.`);
+      } else {
+        console.log(`${c.dim}Commit aborted.${c.reset}`);
+      }
+      return;
+    }
+
+    if (sub === 'pr') {
+      const diff = await getBranchDiff(base, cwd, { onWarn: warn });
+      if (!diff) { fail(`No diff found between ${base} and HEAD. Are you on a feature branch?`); process.exitCode = 1; return; }
+      const wait = spinner(`Gemini is drafting your PR summary (vs ${base})`, { stream: process.stderr });
+      let summary;
+      try { summary = await generatePRSummary(diff); wait.succeed('PR summary ready'); }
+      catch (e) { wait.fail('Gemini failed'); throw e; }
+      console.log();
+      console.log(summary);
+      return;
+    }
+
+    if (sub === 'review') {
+      const diff = await getBranchDiff(base, cwd, { onWarn: warn });
+      if (!diff) { fail(`No diff found between ${base} and HEAD.`); process.exitCode = 1; return; }
+      const wait = spinner(`Gemini is reviewing your code (vs ${base})`, { stream: process.stderr });
+      let review;
+      try { review = await generateCodeReview(diff); wait.succeed('Code review ready'); }
+      catch (e) { wait.fail('Gemini failed'); throw e; }
+      console.log();
+      console.log(review);
+      return;
+    }
+
+    if (sub === 'changelog') {
+      const [diff, stat] = await Promise.all([
+        getBranchDiff(base, cwd, { onWarn: warn }),
+        getDiffStat(base, cwd)
+      ]);
+      if (!diff) { fail(`No diff found between ${base} and HEAD.`); process.exitCode = 1; return; }
+      const wait = spinner(`Gemini is generating your changelog (vs ${base})`, { stream: process.stderr });
+      let log;
+      try { log = await generateChangelog(diff, stat); wait.succeed('Changelog ready'); }
+      catch (e) { wait.fail('Gemini failed'); throw e; }
+      console.log();
+      console.log(log);
+      return;
+    }
+
+    throw new Error(`Unknown ai subcommand: ${sub}. Use: commit, pr, review, changelog`);
+  }
   if (cmd === 'patch') {
     const raw = pos.shift();
     if (!raw) throw new Error('A patch file is required');

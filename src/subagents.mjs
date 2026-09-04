@@ -132,7 +132,7 @@ const withTimeout = (promise, seconds, label) => {
   let timer;
   return Promise.race([
     promise.finally(() => clearTimeout(timer)),
-    new Promise((_, reject) => { timer = setTimeout(() => reject(new Error(`Stage "${label}" timed out after ${seconds}s`)), seconds * 1000); timer.unref?.(); })
+    new Promise((_, reject) => { timer = setTimeout(() => reject(new Error(`Stage "${label}" timed out after ${seconds}s`)), seconds * 1000); })
   ]);
 };
 
@@ -239,7 +239,12 @@ export async function runPipeline({
       while (iteration < Number(loop.max_iterations)) {
         iteration++; loopCounts.set(key, iteration);
         const delay = backoffDelay(iteration, loop.backoff);
-        if (delay) await new Promise(r => { const t = setTimeout(r, delay); t.unref?.(); });
+        // Not unref'd: this IS the wait. An unref'd timer cannot keep the loop alive, so if
+        // nothing else does the process exits and the await never resolves - which on Linux
+        // showed up as nine cancelled pipeline tests. Same class of bug as the stage timeout
+        // above and the hook timeout in hooks.mjs: unref belongs on cosmetic timers (spinners,
+        // progress repaints, kill-escalation cleanup), never on one whose firing is the point.
+        if (delay) await new Promise(r => { setTimeout(r, delay); });
         onEvent({ type: 'loop', from: name, to: loop.target, iteration });
 
         const target = byName.get(loop.target);

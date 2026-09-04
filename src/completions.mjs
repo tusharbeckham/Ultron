@@ -2,7 +2,7 @@
 // provider table in src/providers.mjs — there is a test asserting both stay aligned.
 export const commands = [
   'providers', 'capabilities', 'models', 'registry', 'route', 'doctor',
-  'ask', 'run', 'chat', 'index', 'git', 'patch', 'mcp', 'session',
+  'ask', 'run', 'chat', 'index', 'git', 'patch', 'ai', 'mcp', 'session',
   'agents', 'pipeline', 'notion', 'completion', 'serve', 'permissions', 'audit', 'ide', 'help'
 ];
 export const providerNames = ['alfred', 'openai', 'anthropic', 'kimi', 'deepseek', 'zai', 'local', 'custom', 'kiro', 'claude-code', 'openclaw'];
@@ -10,6 +10,7 @@ export const subcommands = Object.freeze({
   pipeline: ['plan', 'graph', 'run'],
   notion: ['login', 'status', 'logout', 'tools', 'call', 'search', 'page'],
   mcp: ['tools', 'call'],
+  ai: ['commit', 'pr', 'review', 'changelog'],
   session: ['export'],
   audit: ['verify', 'checkpoint', 'show'],
   completion: ['bash', 'zsh', 'fish', 'powershell']

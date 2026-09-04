@@ -70,7 +70,13 @@ export function runHook(hook, payload, { spawnImpl = spawn, cwd = process.cwd(),
       try { child.kill('SIGKILL'); } catch { /* already gone */ }
       resolve({ ok: false, timedOut: true, exitCode: null, stdout: stdout.value, stderr: stderr.value, error: 'timeout', confinement: note });
     }, hook.timeoutMs);
-    timer.unref?.();
+    // Deliberately NOT unref'd. This is the timer that *enforces* the timeout, and an unref'd
+    // timer does not keep the event loop alive - so if nothing else does, Node exits and this
+    // promise never settles. In production a real child process happens to hold the loop open,
+    // which is why it appeared to work; "works because something unrelated keeps the loop
+    // alive" is not a guarantee. Linux CI surfaced it as 8 cancelled tests, because the fake
+    // spawn used there holds nothing open. It is cleared on every settle path below, so not
+    // unref'ing cannot hold the process open past the hook.
 
     child.stdout?.setEncoding?.('utf8');
     child.stderr?.setEncoding?.('utf8');
