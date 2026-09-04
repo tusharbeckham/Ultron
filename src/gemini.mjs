@@ -32,6 +32,9 @@ function requireKey() {
 
 // ── Gemini API call ──────────────────────────────────────────────────────────
 
+const RETRYABLE = new Set([429, 500, 502, 503, 504]);
+const MAX_RETRIES = 3;
+
 async function geminiGenerate(prompt, { temperature = 0.2 } = {}) {
   const key = requireKey();
   const url = `${API_BASE}/models/${GEMINI_MODEL}:generateContent?key=${key}`;
@@ -41,27 +44,39 @@ async function geminiGenerate(prompt, { temperature = 0.2 } = {}) {
     generationConfig: { temperature },
   };
 
-  const res = await fetch(url, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(payload),
-  });
+  let lastError;
+  for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+    if (attempt > 0) {
+      const delayMs = Math.min(10000, 500 * 2 ** attempt) * (0.75 + Math.random() * 0.5);
+      process.stderr.write(`\x1b[2m  retry ${attempt}/${MAX_RETRIES} in ${Math.round(delayMs)}ms…\x1b[0m\n`);
+      await new Promise(r => setTimeout(r, delayMs));
+    }
 
-  if (!res.ok) {
+    const res = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+
+    if (res.ok) {
+      const data = await res.json();
+      const text = data?.candidates?.[0]?.content?.parts
+        ?.map(p => p.text)
+        .join('')
+        ?.trim();
+      if (!text) throw new Error('Gemini returned an empty response');
+      return text;
+    }
+
     const body = await res.text().catch(() => '');
     let message;
     try { message = JSON.parse(body)?.error?.message; } catch { /* ignore */ }
-    throw new Error(`Gemini API error (HTTP ${res.status}): ${message || body.slice(0, 300) || res.statusText}`);
+    lastError = new Error(`Gemini API error (HTTP ${res.status}): ${message || body.slice(0, 300) || res.statusText}`);
+
+    if (!RETRYABLE.has(res.status)) throw lastError;
   }
 
-  const data = await res.json();
-  const text = data?.candidates?.[0]?.content?.parts
-    ?.map(p => p.text)
-    .join('')
-    ?.trim();
-
-  if (!text) throw new Error('Gemini returned an empty response');
-  return text;
+  throw lastError;
 }
 
 // ── Git helpers ──────────────────────────────────────────────────────────────
