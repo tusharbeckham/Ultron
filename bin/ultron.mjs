@@ -1,6 +1,9 @@
 #!/usr/bin/env node
 import { loadEnv } from '../src/env.mjs';
-const _env = loadEnv(); // populate process.env from nearest .env before anything else
+import { fileURLToPath } from 'node:url';
+import { dirname } from 'node:path';
+const _scriptDir = dirname(dirname(fileURLToPath(import.meta.url))); // repo root (bin/../)
+const _env = loadEnv() || loadEnv(_scriptDir); // try cwd first, then CLI install dir
 import readline from 'node:readline/promises';
 import { promises as fs } from 'node:fs';
 import { promises as fsp } from 'node:fs';
