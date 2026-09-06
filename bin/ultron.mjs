@@ -1,4 +1,6 @@
 #!/usr/bin/env node
+import { loadEnv } from '../src/env.mjs';
+const _env = loadEnv(); // populate process.env from nearest .env before anything else
 import readline from 'node:readline/promises';
 import { promises as fs } from 'node:fs';
 import { promises as fsp } from 'node:fs';
@@ -124,6 +126,7 @@ async function main() {
 
     const value={
       version:'0.5.0', node:process.version,
+      envFile: _env ? { file: _env.file, loaded: _env.loaded.length } : null,
       terminal:process.stdout.isTTY?'interactive':'non-interactive',
       timeoutMs:Number(process.env.ULTRON_TIMEOUT_MS||60000),
       maxRetries:Number(process.env.ULTRON_MAX_RETRIES||2),
@@ -139,6 +142,7 @@ async function main() {
     else console.log(panel('Ultron diagnostics',[
       ...(await providerRows()),
       line('node',process.version,'green'),
+      line('.env', _env ? `${_env.file} · ${_env.loaded.length} keys loaded` : 'not found', _env ? 'green' : 'yellow'),
       line('terminal',value.terminal),
       line('profile',profile.name),
       line('timeout',`${value.timeoutMs}ms`),
