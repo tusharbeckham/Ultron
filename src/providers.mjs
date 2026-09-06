@@ -186,7 +186,7 @@ export const providers = {
   bai: {
     description: 'B.AI — unified OpenAI-compatible gateway with free models', configured: () => !!process.env.BAI_API_KEY,
     capabilities: { streaming: true, cancellation: true, retries: true, models: true, usage: true, conversation: true },
-    async askDetailed(prompt, opts = {}) { return openAICompatibleAsk({ provider: 'bai', prefix: 'BAI', base: (process.env.BAI_BASE_URL || 'https://api.b.ai/v1').replace(/\/$/, ''), key: required(process.env.BAI_API_KEY, 'BAI_API_KEY'), model: opts.model || process.env.BAI_MODEL || 'deepseek-v4-flash', prompt, messages: opts.messages, stream: opts.stream, onToken: opts.onToken, policy: opts }); },
+    async askDetailed(prompt, opts = {}) { return openAICompatibleAsk({ provider: 'bai', prefix: 'BAI', base: (process.env.BAI_BASE_URL || 'https://api.b.ai/v1').replace(/\/$/, ''), key: required(process.env.BAI_API_KEY, 'BAI_API_KEY'), model: opts.model || process.env.BAI_MODEL || 'glm-5.3', prompt, messages: opts.messages, stream: opts.stream, onToken: opts.onToken, policy: opts }); },
     async ask(prompt, opts) { return (await this.askDetailed(prompt, opts)).text; },
     async listModels(opts = {}) { const base = (process.env.BAI_BASE_URL || 'https://api.b.ai/v1').replace(/\/$/, ''); return (await jsonRequest(`${base}/models`, { headers: bearer(required(process.env.BAI_API_KEY, 'BAI_API_KEY')) }, opts)).body.data || []; }
   },
