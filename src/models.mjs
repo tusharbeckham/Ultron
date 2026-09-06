@@ -14,7 +14,7 @@ export const modelRegistry = Object.freeze([
   entry('gpt-5.6', 'openai', 400000, 128000, 0, 0, 3, 'Prices not pinned; set OPENAI_*_USD_PER_MILLION to enable estimates.'),
   entry('claude-opus-4-8', 'anthropic', 200000, 64000, 0, 0, 4, 'Prices not pinned; set ANTHROPIC_*_USD_PER_MILLION to enable estimates.'),
   entry('glm-5.3', 'bai', 1000000, 128000, 0, 0, 2, 'Zhipu GLM-5.3 via B.AI. Free.'),
-  entry('qwen-3.8-flash', 'bai', 1048576, 128000, 0, 0, 1, 'Alibaba Qwen 3.8 Flash via B.AI. Free.'),
+  entry('qwen3.8-flash', 'bai', 1048576, 128000, 0, 0, 1, 'Alibaba Qwen 3.8 Flash via B.AI. Free.'),
   entry('mimo-v2.5', 'bai', 131072, 65536, 0, 0, 1, 'Xiaomi MiMo V2.5 via B.AI. Free. Strong at code.'),
   entry('hy3', 'bai', 262144, 65536, 0, 0, 2, 'Tencent Hunyuan 3 via B.AI. Free.')
 ].map(Object.freeze));
