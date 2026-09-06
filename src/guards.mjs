@@ -23,7 +23,7 @@
 
 import { createHash, randomBytes, createHmac, timingSafeEqual } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
-import { existsSync, mkdirSync, appendFileSync, readFileSync, realpathSync, statSync, writeFileSync, renameSync } from 'node:fs';
+import { existsSync, mkdirSync, appendFileSync, readFileSync, realpathSync as _realpathSync, statSync, writeFileSync, renameSync } from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 
@@ -32,6 +32,7 @@ export class GuardError extends Error {
 }
 
 const WINDOWS = process.platform === 'win32';
+const realpathSync = WINDOWS && _realpathSync.native ? _realpathSync.native : _realpathSync;
 
 // --------------------------------------------------------------------- path confinement
 
