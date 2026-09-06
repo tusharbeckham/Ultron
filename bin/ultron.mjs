@@ -63,7 +63,7 @@ async function preflight(name) {
     );
   }
   if (!provider.configured()) {
-    const envHint = { openai: 'OPENAI_API_KEY', anthropic: 'ANTHROPIC_API_KEY', kimi: 'MOONSHOT_API_KEY', deepseek: 'DEEPSEEK_API_KEY', zai: 'ZAI_API_KEY' }[name];
+    const envHint = { openai: 'OPENAI_API_KEY', anthropic: 'ANTHROPIC_API_KEY', kimi: 'MOONSHOT_API_KEY', deepseek: 'DEEPSEEK_API_KEY', zai: 'ZAI_API_KEY', bai: 'BAI_API_KEY' }[name];
     throw new Error(`Provider "${name}" is not configured${envHint ? `. Set ${envHint}` : ''}. Free alternative: ultron chat --provider alfred`);
   }
 }

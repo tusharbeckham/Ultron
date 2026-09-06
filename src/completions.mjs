@@ -5,7 +5,7 @@ export const commands = [
   'ask', 'run', 'chat', 'index', 'git', 'patch', 'ai', 'mcp', 'session',
   'agents', 'pipeline', 'notion', 'completion', 'serve', 'permissions', 'audit', 'ide', 'help'
 ];
-export const providerNames = ['alfred', 'openai', 'anthropic', 'kimi', 'deepseek', 'zai', 'local', 'custom', 'kiro', 'claude-code', 'openclaw'];
+export const providerNames = ['alfred', 'openai', 'anthropic', 'kimi', 'deepseek', 'zai', 'bai', 'local', 'custom', 'kiro', 'claude-code', 'openclaw'];
 export const subcommands = Object.freeze({
   pipeline: ['plan', 'graph', 'run'],
   notion: ['login', 'status', 'logout', 'tools', 'call', 'search', 'page'],
