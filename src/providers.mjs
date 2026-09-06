@@ -93,7 +93,22 @@ async function openAICompatibleAsk({ provider, prefix, base, key, endpoint = 'ch
   const payload = { model, messages: messages?.length ? messages : [{ role: 'user', content: prompt }], stream: !!stream, ...(stream ? { stream_options: { include_usage: true } } : {}) };
   if (!stream) { const { body, headers } = await jsonRequest(`${base}/${endpoint}`, { method: 'POST', headers: bearer(key), body: JSON.stringify(payload) }, policy); return result(provider, model, openAIText(body), body.usage, headers, prefix); }
   const res = await request(`${base}/${endpoint}`, { method: 'POST', headers: bearer(key), body: JSON.stringify(payload) }, policy); let text = '', usage = {};
-  await readSse(res, ({ data }) => { const delta = data?.choices?.[0]?.delta?.content || ''; if (delta) { text += delta; onToken(delta); } if (data?.usage) usage = data.usage; });
+  let inThink = false;
+    await readSse(res, ({ data }) => { 
+      const delta = data?.choices?.[0]?.delta || {};
+      let chunk = "";
+      if (delta.reasoning_content) {
+        if (!inThink) { chunk += "<think>\n"; inThink = true; }
+        chunk += delta.reasoning_content;
+      }
+      if (delta.content) {
+        if (inThink) { chunk += "\n</think>\n\n"; inThink = false; }
+        chunk += delta.content;
+      }
+      if (chunk) { text += chunk; onToken(chunk); }
+      if (data?.usage) usage = data.usage; 
+    });
+    if (inThink) { const end = "\n</think>\n\n"; text += end; onToken(end); }
   return result(provider, model, text, usage, res.headers, prefix);
 }
 

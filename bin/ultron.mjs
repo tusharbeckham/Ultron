@@ -43,7 +43,7 @@ function requestOpts(flags, extra = {}) { return { model: flags.model, stream: !
 async function askOnce(name, prompt, flags = {}) { const provider = getProvider(name), opts = requestOpts(flags, { messages: flags.messages, signal: flags.signal, onToken: flags.onToken || (token => { if (flags.stream && !flags.json) process.stdout.write(token); }) }); const waiting = (!flags.stream && !flags.json && !flags.quiet) ? spinner(`${name}${flags.model ? ` · ${flags.model}` : ''} thinking`, { stream: process.stderr }) : null; let result; try { result = provider.askDetailed ? await provider.askDetailed(prompt, opts) : { provider: name, model: flags.model || null, text: await provider.ask(prompt, opts), usage: null, estimatedCostUsd: null, rateLimit: {} }; } catch (error) { waiting?.fail(`${name} failed`); throw error; } waiting?.succeed(`${name}${result.model ? ` · ${result.model}` : ''}`); if (flags.stream && !flags.json) process.stdout.write('\n'); if (flags.session && !flags.noPersist) { await appendSession(flags.session, { type: 'turn', provider: name, model: result.model, prompt, text: result.text, usage: result.usage }); } return result; }
 function usageLine(result) { if (!result?.usage) return; console.error(costMeter({ inputTokens: result.usage.inputTokens || 0, outputTokens: result.usage.outputTokens || 0, usd: result.estimatedCostUsd, model: result.model, budgetUsd: process.env.ULTRON_BUDGET_USD ? Number(process.env.ULTRON_BUDGET_USD) : null })); }
 
-const DEFAULT_PROVIDER = () => process.env.ULTRON_DEFAULT_PROVIDER || 'alfred';
+const DEFAULT_PROVIDER = () => process.env.ULTRON_DEFAULT_PROVIDER || (process.env.BAI_API_KEY ? 'bai' : 'alfred');
 
 /** Fail with actionable guidance instead of a confusing connection error. */
 async function preflight(name) {
@@ -160,8 +160,8 @@ async function main() {
     if(configErrors.length) process.exitCode=1;
     return;
   }
-  if (cmd === 'ask') { const name=flags.provider||'openai',prompt=pos.join(' ').trim();if(!prompt)throw new Error('A prompt is required');if(flags.session==='new')flags.session=sessionId();const result=await askOnce(name,prompt,flags);if(flags.json)print({...result,sessionId:flags.session||null},true);else if(!flags.stream)console.log(result.text);if(!flags.json)usageLine(result);return; }
-  if (cmd === 'run') { const name=flags.provider||'openai',prompt=pos.join(' ').trim();if(!prompt)throw new Error('A goal is required');const result=await boundedLoop({provider:getProvider(name),prompt,model:flags.model,maxSteps:clampSteps(flags['max-steps']),onStep:(s,n)=>{if(!flags.json)console.error(`${c.dim}agentic pass ${s}/${n}${c.reset}`)}});if(flags.session)await appendSession(flags.session,{type:'bounded-run',provider:name,prompt,text:result.output,steps:result.steps,converged:result.converged});print(flags.json?result:result.output,flags.json);return; }
+  if (cmd === 'ask') { const name=flags.provider||DEFAULT_PROVIDER(),prompt=pos.join(' ').trim();if(!prompt)throw new Error('A prompt is required');if(flags.session==='new')flags.session=sessionId();const result=await askOnce(name,prompt,flags);if(flags.json)print({...result,sessionId:flags.session||null},true);else if(!flags.stream)console.log(result.text);if(!flags.json)usageLine(result);return; }
+  if (cmd === 'run') { const name=flags.provider||DEFAULT_PROVIDER(),prompt=pos.join(' ').trim();if(!prompt)throw new Error('A goal is required');const result=await boundedLoop({provider:getProvider(name),prompt,model:flags.model,maxSteps:clampSteps(flags['max-steps']),onStep:(s,n)=>{if(!flags.json)console.error(`${c.dim}agentic pass ${s}/${n}${c.reset}`)}});if(flags.session)await appendSession(flags.session,{type:'bounded-run',provider:name,prompt,text:result.output,steps:result.steps,converged:result.converged});print(flags.json?result:result.output,flags.json);return; }
   if (cmd === 'chat') { await startChat(flags, pos); return; }
   if (cmd === 'index') {
     const profile = getPermissionProfile(flags.profile);
@@ -275,7 +275,7 @@ async function main() {
   if (cmd === 'mcp') { const sub=pos.shift(),profile=getPermissionProfile(flags.profile);requirePermission(profile,'shell','MCP process launch');const command=flags.command;if(!command)throw new Error('--command is required');const client=new McpClient(command,flags.args?JSON.parse(flags.args):[],{timeoutMs:flags['timeout-ms']?Number(flags['timeout-ms']):30000});try{await client.start();if(sub==='tools')print(await client.listTools(),true);else if(sub==='call'){if(!flags.tool)throw new Error('--tool is required');print(await client.callTool(flags.tool,flags.input?JSON.parse(flags.input):{}),true);}else throw new Error('Use mcp tools|call');}finally{client.close();}return; }
   if (cmd === 'session') { const sub=pos.shift(),id=pos.shift();if(sub!=='export'||!id)throw new Error('Use session export <id>');const format=flags.format||'jsonl',destination=flags.output?path.resolve(flags.output):undefined,value=await exportSession(id,{format,destination});if(destination)print({sessionId:id,format,output:destination},true);else console.log(value);return; }
   if (cmd === 'completion') { console.log(completion(pos.shift()));return; }
-  if (cmd === 'serve') { const name=flags.provider||'openai';await serveAgent({ask:async params=>askOnce(params.provider||name,params.prompt||'',{...flags,...params,json:true,stream:false})});return; }
+  if (cmd === 'serve') { const name=flags.provider||DEFAULT_PROVIDER();await serveAgent({ask:async params=>askOnce(params.provider||name,params.prompt||'',{...flags,...params,json:true,stream:false})});return; }
   if (cmd === 'agents') {
     const root = path.resolve(flags.cwd || process.cwd());
     const agents = await loadAgents(root);
